@@ -3,6 +3,37 @@ library(tidyverse)
 library(readxl)
 
 
+# README ------------------------------------------------------------------
+# Execute this code to update the Australian Stock Market Annual Returns to
+# latest available year. The bottleneck for data availability appears to be 
+# CPI from the ABS. The December CPI results are released in Feb/March the 
+# following year. The code below should only 
+
+
+
+
+# Code --------------------------------------------------------------------
+
+#import the base dataset
+australianstockmarket <- 
+  readRDS("data/australianstockmarket.RDS")
+
+#set the update year as the first of March of the next year in the series
+update_year <- 
+  australianstockmarket$year %>% 
+  max() + 2
+
+update_date <-
+  paste0(update_year,"-03","-01") %>% 
+  as.Date
+
+
+############################################################################
+#function to extract the creation date of a file 
+############################################################################
+find_create_date_of_file <- function(path) {
+  return(as.Date(file.info(path)$ctime))
+}
 ############################################################################
 #function to remove na and extract year and month from date into new columns 
 ############################################################################
@@ -46,14 +77,15 @@ download_file <- function(url, file_name, mode, type){
            type)
   
   if (!file.exists(dest_file)){
-    print(paste0("Downloading ", file_name, type, "....."))
+    print(paste0("Downloading... ", file_name, type, "....."))
     download.file(url = url,
                   destfile = dest_file,
                   mode = mode)
   } else if (file.exists(dest_file)
-             && format(file.info(dest_file)$mtime,'%Y-%m-%d') != format(Sys.time(),'%Y-%m-%d'))
+             & find_create_date_of_file("data/cpi.xlsx") < update_date
+             & Sys.Date() > update_date)
   {
-    print(paste0("Downloading ", file_name, type, "....."))
+    print(paste0("Updating... ", file_name, type, "....."))
     download.file(url = url,
                   destfile = dest_file,
                   mode = mode)
@@ -64,9 +96,8 @@ download_file <- function(url, file_name, mode, type){
   
 }
 
-
 #################################################################################
-#funciton to web scrape abs web page to find latest cpi release (e.g. Sep 2022)
+#function to web scrape abs web page to find latest cpi release (e.g. Sep 2022)
 #################################################################################
 find_cpi_release <- function(){
   
@@ -253,7 +284,7 @@ colnames(cpi) <-
 
 cpi <- 
   cpi %>% 
-  select(c("date",,"Index Numbers ;  All groups CPI ;  Australia ;"))
+  select(c("date","Index Numbers ;  All groups CPI ;  Australia ;"))
 
 # cpi <- 
 #   cpi[c(1,10)] %>% 
@@ -470,21 +501,21 @@ latest_year <-
   find_max_column(dec_ord, 
                   year)
 
-australianstockmarket <- 
-  readRDS("australianstockmarket.RDS")
 
-#check if current month is Feb and if so update the dataset (CPI data should be released in Feb)
-if (month(Sys.Date()) == 2){
+#check if current month is March of the update year and if so update the dataset
+if (month(Sys.Date()) == 3 & year(Sys.Date()) == update_year){
+  print("Updating Data. This may take a while..........")
   update_data(australianstockmarket,
               latest_year) %>% 
-    drop_na()
-  saveRDS("australianstockmarket.RDS")
-  
+  drop_na()
+  saveRDS("data/australianstockmarket.RDS")
+  write.csv("data/australianstockmarket.csv")
+  print("Stock market series has been updated")
   australianstockmarket <- 
-    readRDS("australianstockmarket.RDS")
+    readRDS("data/australianstockmarket.RDS")
   
 } else{
+  print(paste0("Data not available until ", update_date, ". Try again on this date."))
   australianstockmarket <- 
-    readRDS("australianstockmarket.RDS")
+    readRDS("data/australianstockmarket.RDS")
 }
-
