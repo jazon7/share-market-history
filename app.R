@@ -165,7 +165,6 @@ line_plot <-
       ungroup()
     tr <- if(log_y) log10 else identity
     span <- diff(range(tr(df$y), na.rm = TRUE))
-    ends$label_y <- spread_labels(tr(ends$y), span * 0.055)
     
     pal <- setNames(series$colour, series$label)
     if(bars){
@@ -211,10 +210,18 @@ line_plot <-
       y_axis$range <- y_range
     }
     
-    labels <- lapply(seq_len(nrow(ends)), function(i) list(
-      x = ends$year[i], y = ends$label_y[i], text = ends$short[i],
+    # right-margin labels: series names at their end points, plus the band's
+    # edges and median when a band is shown; spread together so none collide
+    lab <- data.frame(y = tr(ends$y), text = ends$short, x = ends$year, xref = "x",
+                      colour = ink$secondary, size = 12)
+    if(!is.null(band)) lab <- rbind(lab, data.frame(
+      y = c(band$hi, band$med, band$lo), text = c("\u2191 Best 10%", "Median", "\u2193 Worst 10%"),
+      x = 1, xref = "paper", colour = ink$muted, size = 11))
+    lab$y_lab <- spread_labels(lab$y, max(span, 1e-6) * 0.055)
+    labels <- lapply(seq_len(nrow(lab)), function(i) list(
+      x = lab$x[i], xref = lab$xref[i], y = lab$y_lab[i], text = lab$text[i],
       xanchor = "left", xshift = 10, showarrow = FALSE,
-      font = list(size = 12, color = ink$secondary)))
+      font = list(size = lab$size[i], color = lab$colour[i])))
     
     p %>% 
       layout(
@@ -457,6 +464,16 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .btn-quiet:hover, .btn-quiet:focus { color: var(--ink); background: transparent; text-decoration: underline; text-underline-offset: 3px; }
 .btn-quiet .fa, .btn-quiet svg { opacity: .7; }
 
+.chart-foot > div:first-child { flex: 1 1 320px; }
+details.how summary { color: var(--ink-3); font-size: .86rem; cursor: pointer; user-select: none; list-style: none; }
+details.how summary::-webkit-details-marker { display: none; }
+details.how summary::before { content: '+'; display: inline-block; width: 1em; color: var(--ink-3); }
+details.how[open] summary::before { content: '−'; }
+details.how summary:hover { color: var(--ink); }
+details.how ul { margin: 10px 0 4px; padding-left: 1em; max-width: 680px; color: var(--ink-2); font-size: .86rem; line-height: 1.6; }
+details.how li { margin-bottom: 6px; padding-left: 2px; }
+details.how li::marker { color: var(--ink-3); }
+
 .app-footer { color: var(--ink-3); font-size: .8rem; margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); line-height: 1.7; }
 .app-footer a { color: var(--ink-2); text-decoration: none; }
 .app-footer a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
@@ -582,6 +599,10 @@ ui <- page(
                           sep = "", ticks = FALSE, width = "100%")),
           
           div(class = "chart-foot",
+              div(conditionalPanel("input.view == 'rolling'",
+                                   tags$details(class = "how",
+                                                tags$summary("How to read this chart"),
+                                                uiOutput("how_to")))),
               downloadButton("download", "Download data (CSV)", class = "btn-quiet"))),
       
       div(class = "app-footer",
@@ -692,6 +713,22 @@ server <- function(input, output, session) {
     div(class = "stats-note", txt)
   })
   
+  #### rolling: how to read ####
+  output$how_to <- renderUI({
+    k <- as.numeric(input$window); y1 <- input$years[2]
+    first <- min(sapply(rolling_ctx(), `[[`, "first"))
+    tags$ul(
+      tags$li(sprintf("Each point is the average yearly return from holding for %d years, ending that year. The point at %d is what you would have earned per year from the end of %d to the end of %d.",
+                      k, y1, y1 - k, y1)),
+      tags$li("Neighbouring points share most of their years, so the line moves in smooth waves. These are not reliable cycles: the same returns shuffled into random order produce similar waves."),
+      tags$li(sprintf("Show a single series to see its typical range. The shaded band holds the middle 80%% of all %d-year periods since %d: above it are the best 10%%, below it the worst 10%%, and the line inside is the median.",
+                      k, first)),
+      tags$li("The cards rank the period ending at the slider's end year against the full history. \u201cHistoric low\u201d and \u201chistoric high\u201d describe the past; they are not forecasts."),
+      tags$li("Bonds use each December's 10-year yield as that year's return, so gains or losses from changing interest rates are not included.")
+    )
+  })
+  outputOptions(output, "how_to", suspendWhenHidden = FALSE)   # lives in a closed <details>
+  
   #### chart ####
   output$chart_title <- renderUI({
     real_txt <- if(real()) ", after inflation" else ""
@@ -707,7 +744,7 @@ server <- function(input, output, session) {
                          tags$p(paste0("Average yearly return over the ", input$window,
                                        " years ending in each year. ",
                                        if(length(shown()) > 1) "Show a single series to see its typical range."
-                                       else sprintf("Shaded: the middle 80%% of all %s-year periods since %s; line: the median.",
+                                       else sprintf("The shaded band is where 80%% of all %s-year periods since %s landed.",
                                                     input$window, min(sapply(rolling_ctx(), `[[`, "first")))))))
   })
   
