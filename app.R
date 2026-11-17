@@ -149,7 +149,7 @@ line_plot <-
            y_range = NULL,       # in data units
            hline = NULL,
            bars = FALSE,         # columns instead of lines (single series)
-           cycles_data = NULL){
+           band = NULL){         # list(lo, hi, med, colour): typical-range band
     
     df <- df %>% 
       inner_join(series, by = "market") %>% 
@@ -192,14 +192,6 @@ line_plot <-
                   marker = list(color = unname(pal[as.character(ends$label)]), size = 7,
                                 line = list(color = "#fcfcfa", width = 2)),
                   cliponaxis = FALSE, hoverinfo = "skip", showlegend = FALSE)
-    }
-    
-    if(!is.null(cycles_data)){
-      p <- p %>% 
-        add_lines(data = cycles_data, x = ~x, y = ~y, 
-                  color = I("#d6d5cf"), line = list(width = 1),
-                  name = "Cycle", showlegend = FALSE, hoverinfo = "skip",
-                  inherit = FALSE)
     }
     
     tick_font <- list(size = 11.5, color = ink$muted)
@@ -245,9 +237,17 @@ line_plot <-
                    # short ranges: one tick per year; otherwise plotly picks spacing from the width
                    if(diff(x_range) <= 10) list(dtick = 1)),
         yaxis = y_axis,
-        shapes = if(!is.null(hline)) list(list(
-          type = "line", xref = "paper", x0 = 0, x1 = 1, layer = "below",
-          y0 = hline, y1 = hline, line = list(color = ink$zero, width = 1))),
+        shapes = c(
+          if(!is.null(band)) list(
+            list(type = "rect", xref = "paper", x0 = 0, x1 = 1, layer = "below",
+                 y0 = band$lo, y1 = band$hi, line = list(width = 0),
+                 fillcolor = band$colour, opacity = 0.08),
+            list(type = "line", xref = "paper", x0 = 0, x1 = 1, layer = "below",
+                 y0 = band$med, y1 = band$med,
+                 line = list(color = band$colour, width = 1), opacity = 0.45)),
+          if(!is.null(hline)) list(list(
+            type = "line", xref = "paper", x0 = 0, x1 = 1, layer = "below",
+            y0 = hline, y1 = hline, line = list(color = ink$zero, width = 1)))),
         annotations = labels,
         margin = list(t = 8, r = 84, b = 30, l = 52),  # fixed so the slider lines up below
         bargap = 0.35,
@@ -268,43 +268,6 @@ fmt_dollars <- function(x){
   if(x >= 1e4) return(sprintf("$%.0fk", x / 1e3))
   paste0("$", formatC(round(x), format = "d", big.mark = ","))
 }
-
-#function to create a sinewave dataframe
-make_sine_wave <- 
-  function(var1,
-           var2, 
-           freq_in_months, 
-           y_min = 0,
-           y_max = 0.2, 
-           up_sample = 12,
-           offset = 0){
-    
-  # length of x axis 
-  x_range <- var2 - var1
-  
-  # y axis range (i.e. difference)
-  y_range <- c(y_min, y_max)
-  
-  #convert from months to years and take inverse 
-  freq <- freq_in_months/12
-  freq <- 1/freq
-  
-  offset <- offset/12
-  
-  #create dataframe of x and y
-  x1 <- 1:(x_range*up_sample)/up_sample
-  amp <- (y_range[2] - y_range[1])/2
-  y1 <- amp*cos(2*pi*freq*x1) + amp
-  
-  df <- 
-    data.frame(x = x1, y = y1) %>% 
-    mutate(y = y - y_range[2]/2) %>% 
-    mutate(x = x + var1 + offset)
-  
-  return(df)
-  
-}
-
 
 ######################################################################
 #create final data frames
@@ -469,6 +432,9 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .series-card .value { font-size: 1.6rem; font-weight: 500; letter-spacing: -0.01em; color: var(--ink); line-height: 1.1; }
 .series-card .rate { font-size: .84rem; color: var(--ink-2); }
 .series-card .lbl-short { display: none; }
+.series-card .ctx { color: var(--ink-3); font-size: .78rem; margin-top: 4px; line-height: 1.4; }
+.series-card .ctx:empty { display: none; }
+.series-card .flag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 3px; color: var(--ink); font-size: .68rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
 .stats-note { color: var(--ink-3); font-size: .8rem; margin: 10px 0 18px; }
 
 /* year range slider under the chart: hairline track, fine handles */
@@ -486,19 +452,10 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 
 /* footer of the chart */
 .chart-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 10px; }
-.chart-foot > div:first-child { flex: 1 1 auto; }
 .chart-foot #download { margin-left: auto; }
 .btn-quiet { color: var(--ink-2); font-size: .86rem; padding: 2px 0; border: 0; background: transparent; }
 .btn-quiet:hover, .btn-quiet:focus { color: var(--ink); background: transparent; text-decoration: underline; text-underline-offset: 3px; }
 .btn-quiet .fa, .btn-quiet svg { opacity: .7; }
-details.advanced summary { color: var(--ink-3); font-size: .86rem; cursor: pointer; user-select: none; padding-top: 2px; }
-details.advanced summary:hover { color: var(--ink-2); }
-details.advanced[open] summary { margin-bottom: 10px; }
-.advanced-body { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 20px; }
-.advanced-body .form-group, .advanced-body .shiny-input-container { width: auto !important; margin-bottom: 4px; }
-.advanced-body .bslib-input-switch { padding-bottom: 6px; color: var(--ink-2); font-size: .88rem; }
-.advanced-body input[type=number] { width: 110px; font-size: .88rem; border-color: var(--line); background: transparent; }
-.advanced-body label { color: var(--ink-3); font-size: .8rem; }
 
 .app-footer { color: var(--ink-3); font-size: .8rem; margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); line-height: 1.7; }
 .app-footer a { color: var(--ink-2); text-decoration: none; }
@@ -530,6 +487,8 @@ details.advanced[open] summary { margin-bottom: 10px; }
   .series-card .figs { flex-direction: column; gap: 0; margin-top: 4px; }
   .series-card .value { font-size: 1.15rem; }
   .series-card .rate { font-size: .74rem; }
+  .series-card .ctx { font-size: .7rem; }
+  .series-card .flag { margin: 2px 0 0; }
   .years { padding: 0 8px; }
 }
 "
@@ -571,7 +530,8 @@ series_toggles <- function(id){
                        span(class = "lbl-short", series$short[i])),
                    div(class = "figs",
                        span(class = "value", textOutput(paste0("val_", series$key[i]), inline = TRUE)),
-                       span(class = "rate", textOutput(paste0("rate_", series$key[i]), inline = TRUE)))))
+                       span(class = "rate", textOutput(paste0("rate_", series$key[i]), inline = TRUE))),
+                   uiOutput(paste0("ctx_", series$key[i]), class = "ctx")))
     }),
     # never let the last visible series be switched off
     tags$script(HTML(sprintf("
@@ -622,14 +582,6 @@ ui <- page(
                           sep = "", ticks = FALSE, width = "100%")),
           
           div(class = "chart-foot",
-              div(conditionalPanel("input.view == 'rolling'",
-                                   tags$details(class = "advanced",
-                                                tags$summary("Advanced"),
-                                                div(class = "advanced-body",
-                                                    input_switch("add_cycles", "Overlay a cycle", value = FALSE),
-                                                    conditionalPanel("input.add_cycles", class = "advanced-body",
-                                                                     numericInput("cycle_months", "Months per cycle", 120, min = 1, max = 480),
-                                                                     numericInput("cycle_months_offset", "Offset (months)", 0, min = 0, max = 480)))))),
               downloadButton("download", "Download data (CSV)", class = "btn-quiet"))),
       
       div(class = "app-footer",
@@ -673,24 +625,39 @@ server <- function(input, output, session) {
       filter(between(year, input$years[1], input$years[2]))
   })
 
-  cycles_df <- reactive({
-    req(input$cycle_months > 0)
-    pct <- rolling_df()$percent
-    y_mx <- (max(pct, na.rm = TRUE) - min(pct, na.rm = TRUE)) / 2
-    make_sine_wave(input$years[1], input$years[2],
-                   freq_in_months = input$cycle_months,
-                   y_min = -y_mx / 2,
-                   y_max = y_mx,
-                   offset = input$cycle_months_offset %||% 0)
-  })
-
   #### headline figures in the series cards ####
   shown <- reactive({
     s <- input$show
     if(length(s) == 0) series$key else s
   })
   
+  # where each series' k-year return (ending at the selected end year) sits
+  # among all k-year periods in the full history
+  rolling_ctx <- reactive({
+    df <- rolling_full_df(); y1 <- input$years[2]; k <- as.numeric(input$window)
+    lapply(setNames(seq_len(nrow(series)), series$key), function(i){
+      h <- df[df$market == series$market[i] & !is.na(df$percent), ]
+      v <- h$percent[h$year == y1]
+      v <- if(length(v)) v else NA
+      list(value = v, k = k, y1 = y1,
+           pct_below = if(is.na(v)) NA else mean(h$percent < v),
+           lo = unname(quantile(h$percent, .1)), hi = unname(quantile(h$percent, .9)),
+           med = median(h$percent), first = min(h$year), n = nrow(h))
+    })
+  })
+  
   card_figs <- reactive({
+    if(identical(input$view, "rolling")){
+      return(lapply(rolling_ctx(), function(c){
+        if(is.na(c$value)) return(list(value = "–", rate = "", ctx = NULL))
+        p <- round(100 * c$pct_below)
+        flag <- if(c$pct_below <= .10) "Near historic low" else if(c$pct_below >= .90) "Near historic high"
+        list(value = sprintf("%.1f%%", 100 * c$value),
+             rate = sprintf("a year, %d–%d", c$y1 - c$k + 1, c$y1),
+             ctx = tagList(sprintf("Higher than %d%% of %d-year periods", p, c$k),
+                           if(!is.null(flag)) span(class = "flag", flag)))
+      }))
+    }
     df <- index_df()
     y0 <- input$years[1]; y1 <- input$years[2]; n <- y1 - y0
     lapply(setNames(seq_len(nrow(series)), series$key), function(i){
@@ -698,20 +665,31 @@ server <- function(input, output, session) {
       end <- if(length(end)) end else NA
       rate <- if(n > 0 && !is.na(end)) (end / 100)^(1 / n) - 1 else NA
       list(value = fmt_dollars(end),
-           rate = if(is.na(rate)) "" else sprintf("%.1f%% a year", rate * 100))
+           rate = if(is.na(rate)) "" else sprintf("%.1f%% a year", rate * 100),
+           ctx = NULL)
     })
   })
   
   lapply(series$key, function(k){
     output[[paste0("val_", k)]] <- renderText(card_figs()[[k]]$value)
     output[[paste0("rate_", k)]] <- renderText(card_figs()[[k]]$rate)
+    output[[paste0("ctx_", k)]] <- renderUI(card_figs()[[k]]$ctx)
+    # hidden while empty (CSS :empty), so it must still update when hidden
+    outputOptions(output, paste0("ctx_", k), suspendWhenHidden = FALSE)
   })
   
   output$stats_note <- renderUI({
-    div(class = "stats-note",
-        sprintf("$100 invested at the end of %s, valued at the end of %s, %s. Click a series to show or hide it.",
-                input$years[1], input$years[2],
-                if(real()) paste0("after inflation (", input$years[1], " dollars)") else "before inflation"))
+    txt <- if(identical(input$view, "rolling")){
+      first <- min(sapply(rolling_ctx(), `[[`, "first"))
+      sprintf("Average yearly return over the %s years to %s, %s, ranked against every %s-year period since %s. Click a series to show or hide it.",
+              input$window, input$years[2], if(real()) "after inflation" else "before inflation",
+              input$window, first)
+    } else {
+      sprintf("$100 invested at the end of %s, valued at the end of %s, %s. Click a series to show or hide it.",
+              input$years[1], input$years[2],
+              if(real()) paste0("after inflation (", input$years[1], " dollars)") else "before inflation")
+    }
+    div(class = "stats-note", txt)
   })
   
   #### chart ####
@@ -727,7 +705,10 @@ server <- function(input, output, session) {
            rolling = div(class = "chart-title",
                          tags$h2(paste0("Rolling ", input$window, "-year returns", real_txt)),
                          tags$p(paste0("Average yearly return over the ", input$window,
-                                       " years ending in each year."))))
+                                       " years ending in each year. ",
+                                       if(length(shown()) > 1) "Show a single series to see its typical range."
+                                       else sprintf("Shaded: the middle 80%% of all %s-year periods since %s; line: the median.",
+                                                    input$window, min(sapply(rolling_ctx(), `[[`, "first")))))))
   })
   
   output$chart <- renderPlotly({
@@ -752,17 +733,22 @@ server <- function(input, output, session) {
                               tick_format = ".0%",
                               hline = 0,
                               bars = length(keep) == 1),   # one series reads better as columns
-           rolling = line_plot(rolling_df() %>% filter(market %in% keep),
-                               y_col = "percent",
-                               x_range = yrs,
-                               y_format = ".1%",
-                               tick_format = ".0%",
-                               hline = 0,
-                               cycles_data = if(isTRUE(input$add_cycles)) cycles_df()))
+           rolling = {
+             band <- NULL
+             if(length(keep) == 1){
+               i <- match(keep, series$market); c <- rolling_ctx()[[series$key[i]]]
+               band <- list(lo = c$lo, hi = c$hi, med = c$med, colour = series$colour[i])
+             }
+             line_plot(rolling_df() %>% filter(market %in% keep),
+                       y_col = "percent",
+                       x_range = yrs,
+                       y_format = ".1%",
+                       tick_format = ".0%",
+                       hline = 0,
+                       band = band)
+           })
   }) %>% bindCache(input$view, real(), input$years, shown(),
-                   if(identical(input$view, "rolling")) input$window,
-                   if(identical(input$view, "rolling") && isTRUE(input$add_cycles))
-                     c(input$cycle_months, input$cycle_months_offset))
+                   if(identical(input$view, "rolling")) input$window)
   
   #### download: the data behind the current chart ####
   output$download <- downloadHandler(
