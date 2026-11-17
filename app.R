@@ -1,14 +1,7 @@
 library(shiny)
-library(shinyWidgets)
-library(shinyjs)
-library(tidyverse)
-library(lubridate)
+library(dplyr)
+library(tidyr)
 library(plotly)
-library(scales)
-library(rvest)
-library(DT)
-library(thematic)
-library(showtext)
 library(bslib)
 
 options(warn=-1)
@@ -16,10 +9,13 @@ options(scipen = 999)
 
 app_theme <- bs_theme(
   version = 5,
-  bootswatch = "flatly",
-  base_font = font_google("Open Sans"),
-  primary = "#0d6efd",          # Customize primary color if desired
-  "font-size-base" = "1.1rem"   # Slightly larger base font for readability
+  bg = "#ffffff",
+  fg = "#0b0b0b",
+  primary = "#1f1f1d",      # controls stay neutral ink; colour is reserved for the data
+  base_font = font_collection("system-ui", "-apple-system", "Segoe UI", "Roboto", "Helvetica Neue", "Arial", "sans-serif"),
+  "border-radius" = "0.5rem",
+  "font-size-base" = "1rem",
+  "link-color" = "#52514e"
 )
 
 ####################################
@@ -114,165 +110,163 @@ create_rr_df <- function(df, filter = F, no_years = NULL){
   
 }
 
-#######################################################
-# function for line plot using ggplot and plotly
-#######################################################
-line_plotly <- 
-  function(df, 
-           x_col, 
-           y_col,
-           x_label = NULL,
-           y_label = NULL,
-           user_axis_x_lab = F,
-           user_axis_y_lab = F,
-           colour_col, 
-           hline_intercept = 0, 
-           hline_colour = 'darkgrey',
-           log = "identity",
-           plotly = TRUE, 
-           x_limits = c(1882,2022), 
-           x_breaks = seq(1882,2022,10),
-           y_breaks = NULL,
-           y_limits = NULL,
-           x_an = NULL,
-           y_an = NULL,
-           lab_an = NULL,
-           leg_txt_size = 10.5,
-           scale_type = NULL,
-           add_cycles = FALSE,
-           cycles_data = NULL,
-           ...){
-    
-    #set colours
-    cols <- c("#46B8DA","#5CB85C","#D43F3A", "#9632B8","#EEA236")
-    labs <- c("Bonds 10 yr", "Stock price + div", "Stock price")
-    
-    plot <- 
-      df %>%
-      ggplot(aes(x = {{x_col}}, 
-                 y = {{y_col}})) +
-      geom_line(aes(colour = {{colour_col}}),
-                linetype = 1,
-                lwd = 0.7) +
-      geom_hline(yintercept = hline_intercept,
-                 colour = hline_colour) +
-      {if(add_cycles == T) geom_line(
-        data = cycles_data, 
-        aes(x = x, y = y),
-        linetype = 1,
-        lwd = 0.2
-      )} +
-      {if(user_axis_x_lab == T)xlab(x_label)} +
-      {if(user_axis_y_lab == T)ylab(y_label)} +
-      scale_x_continuous(limits = x_limits,
-                         breaks = x_breaks) +
-      scale_color_manual(labels = labs,
-                         values = cols) +
-      scale_y_continuous(trans = log,
-                         labels = scale_type,
-                         limits = y_limits,
-                         breaks = y_breaks) +
-      annotate('text', x = x_an, y = y_an, label = lab_an) +
-      theme_minimal() +
-      theme(
-        axis.text.x=element_text(size=11),
-        axis.text.y=element_text(size=11),
-        legend.text = element_text(size = leg_txt_size),
-        legend.position = "top",
-        legend.title=element_blank(),
-        axis.title.y = 
-          element_text(size=12,
-                       margin = margin(t = 0, r = 0.75, b = 0, l = 0, unit = 'cm')),
-        axis.title.x = 
-          element_text(size=12,
-                       margin = margin(t = 0.75, r = 0, b = 0, l = 0, unit = 'cm')))
-    
-    
-    #render as interactive plot
-    if(plotly == TRUE) {
-      plot <- 
-        ggplotly(plot)
-      plot}
-    else{
-      plot
-      
+series <- tibble::tribble(
+  ~key,    ~market,             ~label,                 ~short,          ~colour,
+  "div",   "Stock Price + Div", "Shares + dividends",   "Shares + div",  "#2c5b9a",
+  "price", "Stock Price",       "Shares (price only)",  "Shares",        "#c4692f",
+  "bonds", "Bonds 10yr",        "10-year govt bonds",   "Bonds",         "#2a8f73"
+)
+# palette validated with dataviz validate_palette.js (light, all pairs): all checks pass.
+# Lines also carry direct end labels, so identity never relies on colour alone.
+
+ink <- list(primary = "#111110", secondary = "#4f4e4a", muted = "#8a8882",
+            grid = "#eeede8", axis = "#a9a79f", zero = "#8a8882")
+
+# spread end labels so they don't collide: positions in axis units
+spread_labels <- function(y, min_gap){
+  o <- order(y); v <- y[o]
+  for(k in 1:50){
+    moved <- FALSE
+    for(i in seq_along(v)[-1]) if(v[i] - v[i - 1] < min_gap){
+      mid <- (v[i] + v[i - 1]) / 2
+      v[i - 1] <- mid - min_gap / 2; v[i] <- mid + min_gap / 2; moved <- TRUE
     }
+    if(!moved) break
   }
-
-find_min_max <- function(df, col, min = T){
-  
-  if(min == T){
-    out <-
-      df %>% 
-      select({{col}}) %>% 
-      pull() %>% 
-      min()
-  }
-  else{
-    out <-
-      df %>% 
-      select({{col}}) %>% 
-      pull() %>% 
-      max()  
-  }
-  
-  return(out)
+  y[o] <- v; y
 }
 
-round_all_numeric <- function(df, dig){
-  out <-
-    df %>% 
-    mutate_if(is.numeric,
-              round,
-              digits = dig)
-  
-  return(out)
+#######################################################
+# line chart, native plotly (ggplotly was ~6x slower per render)
+#######################################################
+line_plot <- 
+  function(df,
+           y_col,
+           x_range,
+           y_format = NULL,      # d3 format string for hover
+           tick_format = y_format,
+           log_y = FALSE,
+           y_range = NULL,       # in data units
+           hline = NULL,
+           bars = FALSE,         # columns instead of lines (single series)
+           cycles_data = NULL){
     
-}
+    df <- df %>% 
+      inner_join(series, by = "market") %>% 
+      mutate(label = factor(label, levels = series$label)) %>% 
+      arrange(label, year)
+    df$y <- df[[y_col]]
+    
+    # last point of each series: end dot + direct label
+    ends <- df %>% 
+      filter(!is.na(y)) %>% 
+      group_by(label) %>% 
+      slice_max(year, n = 1) %>% 
+      ungroup()
+    tr <- if(log_y) log10 else identity
+    span <- diff(range(tr(df$y), na.rm = TRUE))
+    ends$label_y <- spread_labels(tr(ends$y), span * 0.055)
+    
+    pal <- setNames(series$colour, series$label)
+    if(bars){
+      p <- 
+        plot_ly(df, x = ~year, y = ~y, color = ~label, colors = pal,
+                type = "bar",
+                marker = list(line = list(width = 0), opacity = 0.9),
+                hovertemplate = paste0("%{y:", y_format, "}"))
+      ends <- ends[0, ]                     # single series: the title names it
+    } else {
+      p <- plot_ly()
+      for(lab in rev(levels(droplevels(df$label)))){     # lead series drawn last, on top
+        d <- df[df$label == lab, ]
+        lead <- lab == series$label[1]
+        p <- p %>% 
+          add_trace(data = d, x = ~year, y = ~y, name = lab,
+                    type = "scatter", mode = "lines",
+                    line = list(color = pal[[lab]], width = if(lead) 2.25 else 1.6,
+                                shape = "linear"),
+                    hovertemplate = paste0("%{y:", y_format, "}"))
+      }
+      p <- p %>% 
+        add_trace(data = ends, x = ~year, y = ~y, type = "scatter", mode = "markers",
+                  marker = list(color = unname(pal[as.character(ends$label)]), size = 7,
+                                line = list(color = "#fcfcfa", width = 2)),
+                  cliponaxis = FALSE, hoverinfo = "skip", showlegend = FALSE)
+    }
+    
+    if(!is.null(cycles_data)){
+      p <- p %>% 
+        add_lines(data = cycles_data, x = ~x, y = ~y, 
+                  color = I("#d6d5cf"), line = list(width = 1),
+                  name = "Cycle", showlegend = FALSE, hoverinfo = "skip",
+                  inherit = FALSE)
+    }
+    
+    tick_font <- list(size = 11.5, color = ink$muted)
+    y_axis <- list(title = "",
+                   tickformat = tick_format,
+                   tickfont = tick_font,
+                   gridcolor = ink$grid, gridwidth = 1,
+                   zeroline = FALSE, showline = FALSE,
+                   ticks = "", nticks = 7,
+                   automargin = FALSE,
+                   fixedrange = TRUE)
+    if(log_y){
+      y_axis$type <- "log"
+      y_axis$dtick <- 1                       # one tick per power of 10
+      if(!is.null(y_range)) y_axis$range <- log10(y_range) + c(-0.05, 0.05)
+    } else if(!is.null(y_range)){
+      y_axis$range <- y_range
+    }
+    
+    labels <- lapply(seq_len(nrow(ends)), function(i) list(
+      x = ends$year[i], y = ends$label_y[i], text = ends$short[i],
+      xanchor = "left", xshift = 10, showarrow = FALSE,
+      font = list(size = 12, color = ink$secondary)))
+    
+    p %>% 
+      layout(
+        font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+                    color = ink$primary),
+        paper_bgcolor = "rgba(0,0,0,0)",
+        plot_bgcolor = "rgba(0,0,0,0)",
+        showlegend = FALSE,                   # the stat cards above are the legend
+        xaxis = c(list(title = "",
+                     range = if(bars) x_range + c(-0.6, 0.6) else x_range,
+                     tickformat = "d",
+                     tickangle = 0,
+                     tickfont = tick_font,
+                     showgrid = FALSE, zeroline = FALSE,
+                     showline = TRUE, linecolor = ink$axis, linewidth = 1,
+                     ticks = "outside", ticklen = 4, tickcolor = ink$axis, tickwidth = 1,
+                     showspikes = TRUE, spikemode = "across", spikesnap = "cursor",
+                     spikethickness = 1, spikecolor = ink$axis, spikedash = "solid",
+                     fixedrange = TRUE),
+                   # short ranges: one tick per year; otherwise plotly picks spacing from the width
+                   if(diff(x_range) <= 10) list(dtick = 1)),
+        yaxis = y_axis,
+        shapes = if(!is.null(hline)) list(list(
+          type = "line", xref = "paper", x0 = 0, x1 = 1, layer = "below",
+          y0 = hline, y1 = hline, line = list(color = ink$zero, width = 1))),
+        annotations = labels,
+        margin = list(t = 8, r = 84, b = 30, l = 52),  # fixed so the slider lines up below
+        bargap = 0.35,
+        hovermode = "x unified",
+        hoverdistance = -1,
+        hoverlabel = list(bgcolor = "#ffffff", bordercolor = "#d6d4cc",
+                          font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+                                      size = 12, color = ink$primary))) %>% 
+      config(displayModeBar = FALSE)
+  }
 
-#function to calculate cagr between two given years
-calc_cagr <- function(df, year_1, year_2, which_market){
-  
-  n <- year_2 - year_1
-  
-  cagr_1 <- 
-    df %>% 
-    filter(year == c(year_1)) %>% 
-    filter(market == which_market) %>% 
-    select(dollars) %>% 
-    pull()
-  
-  cagr_2 <- 
-    df %>% 
-    filter(year == c(year_2)) %>% 
-    filter(market == which_market) %>% 
-    select(dollars) %>% 
-    pull()
-  
-  cagr <- 
-    (cagr_2/cagr_1)^(1/n)-1
-  
-  return(signif(cagr,3) * 100)
-  
-}
 
-
-calc_table <- function(df, year_1, year_2){
-  
-  n <- year_2 - year_1
-  
-  df <-
-    df %>% 
-    filter(year %in% c(year_1,year_2)) %>% 
-    group_by(market) %>% 
-    mutate(cagr = signif((dollars/lag(dollars,1))^(1/n)-1),3) %>%
-    filter(year == year_2) %>% 
-    select(market, cagr) %>% 
-    pivot_wider(names_from = market, values_from = cagr)
-
-  
-  return(df)
-  
+# $12.4M, $148k, $1,234
+fmt_dollars <- function(x){
+  if(is.na(x)) return("–")
+  if(x >= 1e9) return(sprintf("$%.1fB", x / 1e9))
+  if(x >= 1e6) return(sprintf("$%.1fM", x / 1e6))
+  if(x >= 1e4) return(sprintf("$%.0fk", x / 1e3))
+  paste0("$", formatC(round(x), format = "d", big.mark = ","))
 }
 
 #function to create a sinewave dataframe
@@ -282,7 +276,7 @@ make_sine_wave <-
            freq_in_months, 
            y_min = 0,
            y_max = 0.2, 
-           up_sample = 100,
+           up_sample = 12,
            offset = 0){
     
   # length of x axis 
@@ -350,77 +344,9 @@ stock_temp <-
            calc_index(bonds_rr_indx, bonds_rr , 1))
 
 
-min_yr <- 
-  find_min_max(australianstockmarket, 
-                       year, 
-                       min = T)
-max_yr <- 
-  find_min_max(australianstockmarket, 
-                       year, 
-                       min = F)
+min_yr <- min(australianstockmarket$year)
+max_yr <- max(australianstockmarket$year)
 
-
-# function to create index values based on minimum and maximum input years.
-create_index_df <- function(real = F, 
-                            min_year = min_yr, 
-                            max_year = max_yr ){
-  
-  df <- 
-    australianstockmarket %>%
-    filter(between(year, min_year, max_year)) %>% 
-    mutate(across(-c(year,inflation), 
-                  ~calc_real_return(., inflation), .names = '{.col}_rr')) %>% 
-    mutate(across(c(stock_accumulation,stock_price,bonds,inflation), 
-                  ~ifelse(year == min_year, 100, NA), .names = '{.col}_indx')) %>% 
-    mutate(stock_accumulation_indx = 
-             calc_index(stock_accumulation_indx, stock_accumulation , 1)) %>% 
-    mutate(stock_price_indx = 
-             calc_index(stock_price_indx, stock_price , 1))  %>% 
-    mutate(bonds_indx = 
-             calc_index(bonds_indx, bonds , 1)) %>% 
-    mutate(inflation_indx = 
-             calc_index(inflation_indx, inflation , 1)) %>%
-    mutate(across(c(stock_accumulation_rr,stock_price_rr,bonds_rr), 
-                  ~ifelse(year == min_year, 100, NA), .names = '{.col}_indx')) %>% 
-    mutate(stock_accumulation_rr_indx = 
-             calc_index(stock_accumulation_rr_indx, stock_accumulation_rr , 1)) %>% 
-    mutate(stock_price_rr_indx = 
-             calc_index(stock_price_rr_indx, stock_price_rr , 1))  %>% 
-    mutate(bonds_rr_indx = 
-             calc_index(bonds_rr_indx, bonds_rr , 1))
-  
-  
-  if(real == F){
-    out <- 
-      df %>% 
-      select(-contains("rr")) %>% 
-      select(year, ends_with('indx')) %>% 
-      mutate(across(c(-year), 
-                    ~ifelse(year == min_year, 100, .))) %>% 
-      convert_to_tidy(val_to_name = 'dollars') %>% 
-      mutate(market = recode(market,'bonds_indx' = 'Bonds 10yr',
-                             'stock_price_indx' = 'Stock Price',
-                             'stock_accumulation_indx' = 'Stock Price + Div')) %>% 
-      filter(market != "inflation_indx") %>% 
-      round_all_numeric(.,0)
-  }
-  else{
-    out <-
-      df %>% select(year, contains("rr")) %>% 
-      select(year, ends_with('indx')) %>% 
-      mutate(across(c(-year), 
-                    ~ifelse(year == min_year, 100, .))) %>% 
-      convert_to_tidy(val_to_name = 'dollars') %>% 
-      mutate(market = recode(market,'bonds_rr_indx' = 'Bonds 10yr',
-                             'stock_price_rr_indx' = 'Stock Price',
-                             'stock_accumulation_rr_indx' = 'Stock Price + Div')) %>% 
-      filter(market != "inflation_indx") %>% 
-      round_all_numeric(.,0)  
-      
-    
-  }
-  
-}
 
 #create nominal and real dataframes for returns and index in long format    
 stock_returns_nom <-
@@ -464,614 +390,411 @@ stock_index_real <-
 
 
 
-#set href links
-ref_brail_2008 <- "https://research.bond.edu.au/en/publications/re-examination-of-the-historical-equity-risk-premium-in-australia"
-ref_brail_2012 <- "https://research.bond.edu.au/en/publications/the-historical-equity-risk-premium-in-australia-post-gfc-and-128-"
-ref_snp <- "https://www.spglobal.com/spdji/en/indices/equity/all-ordinaries/#overview"
-ref_rba <- "https://www.rba.gov.au/statistics/tables"
-ref_abs <- "https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release"
+# rebase a precomputed index (from 1882) to $100 at the first year of a range.
+# index[t] / index[start] * 100, unrounded (round for display).
+rebase_index <- function(df, min_year, max_year){
+  df %>% 
+    filter(market != "inflation_indx",
+           year >= min_year, year <= max_year) %>% 
+    group_by(market) %>% 
+    mutate(dollars = dollars / dollars[year == min_year] * 100) %>% 
+    ungroup()
+}
 
+# rolling returns over the full history for one window length
+rolling_full <- function(real, no_years){
+  create_rr_df(if(real) stock_index_real else stock_index_nom, 
+               filter = T, no_years = no_years) %>% 
+    ungroup() %>% 
+    filter(market != "inflation_indx") %>% 
+    mutate(percent = round(percent, 4))   # 0.01%; 2 dp made the lines stair-step
+}
 
+######################################################################
+# sources
+######################################################################
+sources <- list(
+  list("S&P Dow Jones Indices", "https://www.spglobal.com/spdji/en/indices/equity/all-ordinaries/#overview"),
+  list("Reserve Bank of Australia", "https://www.rba.gov.au/statistics/tables"),
+  list("Australian Bureau of Statistics", "https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release"),
+  list("Brailsford et al. (2012)", "https://research.bond.edu.au/en/publications/the-historical-equity-risk-premium-in-australia-post-gfc-and-128-")
+)
+
+app_css <- "
+:root {
+  --ink: #111110; --ink-2: #4f4e4a; --ink-3: #8a8882;
+  --line: #e6e4de; --line-2: #d6d4cc; --page: #fcfcfa;
+}
+html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+.app { max-width: 1040px; margin: 0 auto; padding: 56px 28px 64px; }
+
+/* header */
+.app-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--ink); margin-bottom: 4px; }
+.app-header h1 { font-size: 1.85rem; font-weight: 600; letter-spacing: -0.025em; line-height: 1.15; margin: 0 0 8px; }
+.app-header p { color: var(--ink-2); margin: 0; font-size: 1rem; }
+.about-link { color: var(--ink-2); font-size: .88rem; text-decoration: none; white-space: nowrap; }
+.about-link:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+
+/* view tabs + inflation switch */
+.chart-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; border-bottom: 1px solid var(--line); }
+.chart-bar-left { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 28px; }
+.seg { display: inline-flex; gap: 26px; }
+.seg .btn { border: 0; border-radius: 0 !important; padding: 14px 0 12px; margin-bottom: -1px; font-size: .92rem; font-weight: 500; color: var(--ink-3); background: transparent; border-bottom: 2px solid transparent; }
+.seg .btn:hover { color: var(--ink); background: transparent; }
+.seg .btn-check:checked + .btn { color: var(--ink); border-bottom-color: var(--ink); background: transparent; }
+.seg .btn-check:focus-visible + .btn { outline: 2px solid var(--ink-3); outline-offset: 2px; }
+.window { display: flex; align-items: center; }
+.window .form-group { margin: 0; display: flex; align-items: center; gap: 8px; }
+.window label { margin: 0; color: var(--ink-3); font-size: .88rem; font-weight: 400; }
+.window select { width: auto; font-size: .88rem; padding: 3px 28px 3px 8px; border-color: var(--line); background-color: transparent; }
+.chart-bar > .shiny-input-container { width: auto !important; margin: 0 0 0 auto; }
+.chart-bar .bslib-input-switch { margin: 0; color: var(--ink-2); font-size: .88rem; }
+.form-switch .form-check-input { cursor: pointer; }
+.form-switch .form-check-input:focus { box-shadow: none; }
+
+.chart-title { margin: 28px 0 0; }
+.chart-title h2 { font-size: 1.15rem; font-weight: 600; margin: 0; letter-spacing: -0.012em; }
+.chart-title p { color: var(--ink-3); font-size: .88rem; margin: 4px 0 0; }
+
+/* series legend: name + headline figures, click to show/hide. No boxes. */
+.series { display: grid; grid-template-columns: repeat(3, 1fr); margin: 22px 0 6px; }
+.series-card { display: block; margin: 0; padding: 2px 20px 4px; border-left: 1px solid var(--line); cursor: pointer; user-select: none; transition: opacity .15s; }
+.series-card:first-of-type { padding-left: 0; border-left: 0; }
+.series .btn-check:not(:checked) + .series-card { opacity: .38; }
+.series .btn-check:focus-visible + .series-card { outline: 2px solid var(--ink-3); outline-offset: 4px; }
+.series-card:hover .name { color: var(--ink); }
+.series-card .name { display: flex; align-items: center; gap: 9px; color: var(--ink-2); font-size: .86rem; }
+.series-card .dot { width: 16px; height: 3px; border-radius: 2px; background: var(--c); flex: none; }
+.series-card .figs { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px; }
+.series-card .value { font-size: 1.6rem; font-weight: 500; letter-spacing: -0.01em; color: var(--ink); line-height: 1.1; }
+.series-card .rate { font-size: .84rem; color: var(--ink-2); }
+.series-card .lbl-short { display: none; }
+.stats-note { color: var(--ink-3); font-size: .8rem; margin: 10px 0 18px; }
+
+/* year range slider under the chart: hairline track, fine handles */
+.years { padding: 0 77px 0 45px; }   /* plot margins (52 / 84) minus half a handle */
+.years .form-group { margin: 0; }
+.irs--shiny { height: 42px; }
+.irs--shiny .irs-line { height: 1px; top: 26px; background: var(--line-2); border: 0; border-radius: 0; }
+.irs--shiny .irs-bar { height: 2px; top: 25.5px; background: var(--ink-2); border: 0; }
+.irs--shiny .irs-handle { width: 14px; height: 14px; top: 19px; background: #fff; border: 1.5px solid var(--ink-2); box-shadow: none; cursor: grab; }
+.irs--shiny .irs-handle:hover, .irs--shiny .irs-handle.state_hover { background: #fff; border-color: var(--ink); }
+.irs--shiny .irs-handle > i:first-child { display: none; }
+.irs--shiny .irs-from, .irs--shiny .irs-to, .irs--shiny .irs-single { background: transparent; color: var(--ink-2); font-size: .8rem; font-weight: 500; top: -1px; padding: 0 2px; font-variant-numeric: tabular-nums; }
+.irs--shiny .irs-from:before, .irs--shiny .irs-to:before, .irs--shiny .irs-single:before { display: none; }
+.irs--shiny .irs-min, .irs--shiny .irs-max { display: none; }
+
+/* footer of the chart */
+.chart-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 10px; }
+.chart-foot > div:first-child { flex: 1 1 auto; }
+.chart-foot #download { margin-left: auto; }
+.btn-quiet { color: var(--ink-2); font-size: .86rem; padding: 2px 0; border: 0; background: transparent; }
+.btn-quiet:hover, .btn-quiet:focus { color: var(--ink); background: transparent; text-decoration: underline; text-underline-offset: 3px; }
+.btn-quiet .fa, .btn-quiet svg { opacity: .7; }
+details.advanced summary { color: var(--ink-3); font-size: .86rem; cursor: pointer; user-select: none; padding-top: 2px; }
+details.advanced summary:hover { color: var(--ink-2); }
+details.advanced[open] summary { margin-bottom: 10px; }
+.advanced-body { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 20px; }
+.advanced-body .form-group, .advanced-body .shiny-input-container { width: auto !important; margin-bottom: 4px; }
+.advanced-body .bslib-input-switch { padding-bottom: 6px; color: var(--ink-2); font-size: .88rem; }
+.advanced-body input[type=number] { width: 110px; font-size: .88rem; border-color: var(--line); background: transparent; }
+.advanced-body label { color: var(--ink-3); font-size: .8rem; }
+
+.app-footer { color: var(--ink-3); font-size: .8rem; margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); line-height: 1.7; }
+.app-footer a { color: var(--ink-2); text-decoration: none; }
+.app-footer a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+
+.modal-content { border: 0; border-radius: 6px; }
+.modal-header { border-bottom-color: var(--line); }
+.modal-title { font-weight: 600; font-size: 1.15rem; letter-spacing: -0.01em; }
+.modal-body { color: var(--ink-2); line-height: 1.65; }
+.modal-body h3 { font-size: 1.1rem; font-weight: 600; color: var(--ink); margin-top: .5rem; }
+.modal-body h4 { font-size: 1rem; font-weight: 600; color: var(--ink); }
+.modal-body h5 { font-size: .95rem; font-weight: 600; color: var(--ink); }
+.modal-body a { color: var(--ink); }
+.modal-body hr { border-color: var(--line); opacity: 1; }
+.modal-footer { border-top-color: var(--line); }
+
+@media (max-width: 640px) {
+  .app { padding: 28px 16px 40px; }
+  .app-header { flex-direction: column; align-items: flex-start; gap: 6px; padding-bottom: 14px; }
+  .app-header h1 { font-size: 1.45rem; }
+  .seg { gap: 18px; }
+  .seg .btn { font-size: .86rem; padding: 12px 0 10px; }
+  .chart-bar > .shiny-input-container { margin: 6px 0 10px; }
+  .series-card { padding: 0 10px; }
+  .series-card .name { font-size: .76rem; gap: 6px; }
+  .series-card .dot { width: 10px; }
+  .series-card .lbl-full { display: none; }
+  .series-card .lbl-short { display: inline; }
+  .series-card .figs { flex-direction: column; gap: 0; margin-top: 4px; }
+  .series-card .value { font-size: 1.15rem; }
+  .series-card .rate { font-size: .74rem; }
+  .years { padding: 0 8px; }
+}
+"
+
+# segmented control that behaves as a shiny radio input (input$view)
+segmented <- function(id, choices, selected){
+  tags$div(
+    id = id, class = "shiny-input-radiogroup seg", role = "radiogroup",
+    lapply(names(choices), function(lab){
+      val <- choices[[lab]]
+      bid <- paste0(id, "_", val)
+      tagList(
+        tags$input(type = "radio", class = "btn-check", name = id, id = bid,
+                   value = val, autocomplete = "off",
+                   checked = if(val == selected) NA),
+        tags$label(class = "btn", `for` = bid, lab)
+      )
+    })
+  )
+}
 
 # Define UI for application ############################# 
-ui <- fluidPage(
 
-  theme = app_theme,
-  
-  tags$head(
-    tags$style(HTML("a{font-size: 95%;}"))
-  ),
-  
-  
-  titlePanel("Australian Stock Market App"),
-  
-  tags$br(),
-  
-  sidebarLayout(position = 'left',
-                sidebarPanel(
-                  conditionalPanel(condition="input.tabselected==1",
-                                   
-                                   tags$br(),
-                                   materialSwitch(inputId = "index_plot_type", label = "Adjust for inflation", value = FALSE, status = 'info'),
-                                   tags$br(),
-                                   sliderInput("slider_index_plot", 
-                                               label = h3("Select year range"), 
-                                               min = find_min_max(stock_temp, year, min = T), 
-                                               max = find_min_max(stock_temp, year, min = F), 
-                                               value = c(1882, find_min_max(stock_temp, year, min = F)),
-                                               sep = ""),
-                                   
-                                   
-                                   tags$br(),
-                                   tags$div(tags$p(HTML("<br><br>
-                       Data sources: ")),
-                       tags$ul(tags$li(tags$a(href=ref_snp, "S&P Dow Jones Indices")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_rba, "Reserve Bank of Australia")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_abs, "Australian Bureau of Statistics")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_brail_2012 , "Brailsford et al.(2012)"))),
-                                   ),
-                       
-                  ),
-                  
-                  conditionalPanel(condition = "input.tabselected==2", 
-                                   
-                                   tags$br(),
-                                   materialSwitch(inputId = "returns_plot_type", label = "Adjust for inflation", value = FALSE, status = 'info'),
-                                   tags$br(),
-                                   sliderInput("slider_returns_plot", 
-                                               label = h3("Select year range"), 
-                                               min = find_min_max(stock_temp, year, min = T), 
-                                               max = find_min_max(stock_temp, year, min = F), 
-                                               value = c(1882, find_min_max(stock_temp, year, min = F)),
-                                               sep = ""),
-                  
-                
-                                  tags$br(),
-                                   tags$div(tags$p(HTML("<br><br>
-                       Data sources: ")),
-                       tags$ul(tags$li(tags$a(href=ref_snp, "S&P Dow Jones Indices")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_rba, "Reserve Bank of Australia")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_abs, "Australian Bureau of Statistics")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_brail_2012 , "Brailsford et al.(2012)"))),
-                                   ),
-                       
-                  ),
-                  
-                  conditionalPanel(condition = "input.tabselected==3", 
-                                   useShinyjs(),
-                                   tags$br(),
-                                   materialSwitch(inputId = "rolling_plot_type", label = "Adjust for inflation", value = FALSE, status = 'info'),
-                                   tags$br(),
-                                   sliderInput("slider_rolling_returns_plot", 
-                                               label = h3("Select year range"), 
-                                               min = find_min_max(stock_temp, year, min = T), 
-                                               max = find_min_max(stock_temp, year, min = F), 
-                                               value = c(1882, find_min_max(stock_temp, year, min = F)),
-                                               sep = ""),
-                                   
-                                   
-                                   tags$br(),
-                                   tags$br(),
-                                   selectizeInput('rolling_years_input', 'Select rolling years: ',
-                                                  choices = seq(3,21,by = 1),
-                                                  
-                                                  selected = 3),
-                                   tags$br(),
-                                   tags$br(),
-                                   materialSwitch(inputId = "add_cycles", label = "Add cycles", value = FALSE, status = 'info'),
-                                   tags$br(),
-                                   hidden(numericInput("cycle_months", "Months per cycle:", 120, min = 1, max = 480),
-                                   tags$br(),
-                                   numericInput("cycle_months_offset", "Months offset:", 0, min = 1, max = 480)),
-                                   tags$div(tags$p(HTML("<br>
-                       Data sources: ")),
-                       tags$ul(tags$li(tags$a(href=ref_snp, "S&P Dow Jones Indices")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_rba, "Reserve Bank of Australia")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_abs, "Australian Bureau of Statistics")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_brail_2012 , "Brailsford et al.(2012)"))),
-                                   ),
-                       
-                  ),
-                  conditionalPanel(condition = "input.tabselected==4", 
-                                   
-                                   tags$div(tags$p(HTML("<br><br>
-                       Data sources: ")),
-                       tags$ul(tags$li(tags$a(href=ref_snp, "S&P Dow Jones Indices")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_rba, "Reserve Bank of Australia")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_abs, "Australian Bureau of Statistics")),
-                               tags$br(),
-                               tags$li(tags$a(href=ref_brail_2012 , "Brailsford et al.(2012)"))),
-                                   )
-                       
-                  )
-                  
-                  ,width = 3),
-                
-                
-                mainPanel(
-                  tabsetPanel(type = 'tabs',
-                              id = 'tabselected',
-                              selected = 1,
-                              tabPanel("Index",
-                                       fluid = T, 
-                                       value = 1, 
-                                       plotlyOutput("index_plot", 
-                                                    width = '100%',
-                                                    height = 600),
-                                       tags$br(),
-                                       tags$br(),
-                                       tags$h4("Annualised Returns"), 
-                                       DT::dataTableOutput("index_cagr_table"),
-                                       tags$br(),
-                                       tags$br(),
-                                       tags$h4("Data output"), 
-                                       DT::dataTableOutput("index_table"),
-                                       tags$br(),
-                                       tags$figcaption("Values in each market column are in dollars (AUD)")),
-                              tabPanel("Returns",
-                                       fluid = T, 
-                                       value = 2, 
-                                       plotlyOutput("returns_plot", 
-                                                    width = '100%',
-                                                    height = 600),
-                                       tags$br(),
-                                       tags$br(),
-                                       DT::dataTableOutput("returns_table"),
-                                       tags$br(),
-                                       tags$figcaption("Values in each market column are annualised returns in percent year on year")),
-                              tabPanel("Rolling Returns",
-                                       fluid = T, 
-                                       value = 3, 
-                                       plotlyOutput("rolling_returns_plot", 
-                                                    width = '100%',
-                                                    height = 600),
-                                       tags$br(),
-                                       tags$br(),
-                                       DT::dataTableOutput("rolling_returns_table"),
-                                       tags$br(),
-                                       tags$figcaption("Values in each market column are annualised returns in percent")),
-                              tabPanel("About",
-                                       fluid = T, 
-                                       value = 4, 
-                                       includeHTML("about.Rhtml"),
-                                       tags$head(
-                                         tags$style("#about_text{
-                                                 color:black; 
-                                                 font-size:13px; 
-                                                 overflow-y:scroll; 
-                                                 max-height: 500px; 
-                                                 width: 700px; 
-                                                 max-width:100%;
-                                                 padding-left:10px;
-                                                 padding-right:10px;
-                                                 background: ghostwhite;
-                                                 white-space: pre-wrap;
-                                                 }"))),
-                              
-                  ))
+# series toggles: a shiny checkbox group (input$show) styled as legend cards
+series_toggles <- function(id){
+  tags$div(
+    id = id, class = "shiny-input-checkboxgroup series", role = "group",
+    `aria-label` = "Series shown on the chart",
+    lapply(seq_len(nrow(series)), function(i){
+      bid <- paste0(id, "_", series$key[i])
+      tagList(
+        tags$input(type = "checkbox", class = "btn-check", name = id, id = bid,
+                   value = series$key[i], autocomplete = "off", checked = NA),
+        tags$label(class = "series-card", `for` = bid,
+                   style = paste0("--c:", series$colour[i]),
+                   title = "Click to show or hide",
+                   div(class = "name", span(class = "dot"),
+                       span(class = "lbl-full", series$label[i]),
+                       span(class = "lbl-short", series$short[i])),
+                   div(class = "figs",
+                       span(class = "value", textOutput(paste0("val_", series$key[i]), inline = TRUE)),
+                       span(class = "rate", textOutput(paste0("rate_", series$key[i]), inline = TRUE)))))
+    }),
+    # never let the last visible series be switched off
+    tags$script(HTML(sprintf("
+      document.getElementById('%s').addEventListener('click', function(e){
+        var el = e.target;
+        if (el.tagName !== 'INPUT') return;
+        if (!el.checked && !this.querySelector('input:checked')) e.preventDefault();
+      });", id)))
   )
-  
+}
 
+ui <- page(
+  theme = app_theme,
+  title = "Australian Stock Market",
+  tags$head(tags$style(HTML(app_css))),
+  
+  div(class = "app",
+      
+      div(class = "app-header",
+          div(tags$h1("Australian Stock Market"),
+              tags$p(paste0("Shares, dividends and government bonds, ", min_yr, "–", max_yr, "."))),
+          actionLink("about", "About the data", class = "about-link")),
+      
+      div(class = "chart-panel",
+          div(class = "chart-bar",
+              div(class = "chart-bar-left",
+                  segmented("view",
+                            c("Growth of $100" = "growth",
+                              "Annual returns" = "annual",
+                              "Rolling returns" = "rolling"),
+                            selected = "growth"),
+                  conditionalPanel("input.view == 'rolling'", class = "window",
+                                   selectInput("window", "Window",
+                                               choices = setNames(3:21, paste(3:21, "years")),
+                                               selected = 10, width = "auto", selectize = FALSE))),
+              input_switch("real", "Adjust for inflation", value = FALSE)),
+          
+          uiOutput("chart_title"),
+          series_toggles("show"),
+          uiOutput("stats_note"),
+          
+          plotlyOutput("chart", height = "540px"),
+          
+          div(class = "years",
+              sliderInput("years", NULL,
+                          min = min_yr, max = max_yr,
+                          value = c(min_yr, max_yr),
+                          sep = "", ticks = FALSE, width = "100%")),
+          
+          div(class = "chart-foot",
+              div(conditionalPanel("input.view == 'rolling'",
+                                   tags$details(class = "advanced",
+                                                tags$summary("Advanced"),
+                                                div(class = "advanced-body",
+                                                    input_switch("add_cycles", "Overlay a cycle", value = FALSE),
+                                                    conditionalPanel("input.add_cycles", class = "advanced-body",
+                                                                     numericInput("cycle_months", "Months per cycle", 120, min = 1, max = 480),
+                                                                     numericInput("cycle_months_offset", "Offset (months)", 0, min = 0, max = 480)))))),
+              downloadButton("download", "Download data (CSV)", class = "btn-quiet"))),
+      
+      div(class = "app-footer",
+          "Sources: ",
+          tagList(lapply(seq_along(sources), function(i){
+            tagList(if(i > 1) " · ",
+                    tags$a(href = sources[[i]][[2]], target = "_blank", rel = "noopener", sources[[i]][[1]]))
+          })))
+  )
 )
 
 
+# Define server logic #############################
+server <- function(input, output, session) {
 
+  real <- reactive(isTRUE(input$real))
 
+  # index rebased to $100 at the first selected year (unrounded)
+  index_df <- reactive({
+    req(input$years)
+    rebase_index(if(real()) stock_index_real else stock_index_nom,
+                 input$years[1], input$years[2])
+  })
 
-# Define server logic required to draw a histogram ############################# 
-server <- function(input, output) {
-  
-  observeEvent(input$add_cycles, {
-    if(input$add_cycles == FALSE){
-      shinyjs::hide("cycle_months")
-      shinyjs::hide("cycle_months_offset")
-    } else {
-      shinyjs::show("cycle_months")
-      shinyjs::show("cycle_months_offset")
-    }
+  returns_df <- reactive({
+    req(input$years)
+    (if(real()) stock_returns_real else stock_returns_nom) %>%
+      filter(market != "inflation",
+             between(year, input$years[1], input$years[2]))
   })
-  
-  data_cycles <- reactive({
-    
-    cycles_y_max <- 
-      data_rolling_returns_plot() %>% 
-      pivot_wider(names_from = market, 
-                  values_from = percent) %>% 
-      select(-year, -roll_years) %>% 
-      sapply(., max, na.rm = TRUE) %>% 
-      max(na.rm = TRUE)
-    
-    cycles_y_min <- 
-      data_rolling_returns_plot() %>% 
-      pivot_wider(names_from = market, 
-                  values_from = percent) %>% 
-      select(-year, -roll_years) %>% 
-      sapply(., min, na.rm = TRUE) %>% 
-      min(na.rm = TRUE)
-    
-    cycles_y_mx <-
-      (cycles_y_max - cycles_y_min) / 2
-    
-    cycles_y_mn <-
-      (cycles_y_mx / 2) * -1
 
-    out <- 
-      make_sine_wave(input$slider_rolling_returns_plot[1],
-                     input$slider_rolling_returns_plot[2], 
-                     freq_in_months = input$cycle_months,
-                     y_min = cycles_y_mn,
-                     y_max = cycles_y_mx,
-                     offset = input$cycle_months_offset)
-    
-  })
-  
-  
-  data_index_plot_reactive <- reactive({
-    
-    if(input$index_plot_type == FALSE){
-    out <-
-      create_index_df(
-        real = F,
-        min_year = input$slider_index_plot[1],
-        max_year = input$slider_index_plot[2])  
-    }else{
-    out <- 
-      create_index_df(
-        real = T,
-        min_year = input$slider_index_plot[1],
-        max_year = input$slider_index_plot[2])
-    }
-    
-  })
-  
-  data_index_plot <- reactive({
-    if(input$index_plot_type == FALSE){
-      out <- stock_index_nom 
-    }else{
-      out <- stock_index_real
-    }
-  })
-  
-  data_returns_plot <- reactive({
-    
-    if(input$returns_plot_type == FALSE){
-      out <- stock_returns_nom %>% 
-        filter(between(year, 
-                       input$slider_returns_plot[1], 
-                       input$slider_returns_plot[2])) %>% 
-        filter(market != "inflation") 
-    }else{
-      out <- stock_returns_real %>% 
-        filter(between(year, 
-                       input$slider_returns_plot[1], 
-                       input$slider_returns_plot[2])) %>% 
-        filter(market != "inflation") 
-    }
-  })
-  
-  data_rolling_returns_plot <- reactive({
-    
-    if(input$rolling_plot_type == FALSE){
-      out <- 
-        create_rr_df(stock_index_nom, 
-                     filter = T, 
-                     no_years = as.numeric(input$rolling_years_input)) %>% 
-        filter(market != "inflation_indx") %>% 
-        filter(between(year, 
-                       input$slider_rolling_returns_plot[1], 
-                       input$slider_rolling_returns_plot[2])) %>% 
-        round_all_numeric(.,2)
-    }else{
-      out <- 
-        create_rr_df(stock_index_real, 
-                     filter = T, 
-                     no_years = as.numeric(input$rolling_years_input)) %>% 
-        filter(market != "inflation_indx") %>% 
-        filter(between(year, 
-                       input$slider_rolling_returns_plot[1], 
-                       input$slider_rolling_returns_plot[2])) %>% 
-        round_all_numeric(.,2)
-    }
-  })
-  
-  
-  output$index_plot <- renderPlotly({
-    
+  # full-history rolling returns: depend only on window and real/nominal,
+  # so slider moves just filter. Cached app-wide on first use.
+  rolling_full_df <- reactive({
+    rolling_full(real(), as.numeric(input$window))
+  }) %>% bindCache(real(), input$window)
 
-    if(input$slider_returns_plot[2]-input$slider_returns_plot[1] > 10){
-      break_number <- 10
-      
-    } else{
-      
-      break_number <- (input$slider_returns_plot[2]-input$slider_returns_plot[1])
-    }
-    
-    max_dollars <- 
-      data_index_plot_reactive() %>% 
-      find_min_max(dollars, min = F)
-    
-    min_dollars <-
-      data_index_plot_reactive() %>% 
-      find_min_max(dollars, min = T)
-    
-    if(min_dollars > 100){
-      min_dollars <- 100
-    }
-      
-    
-    data_index_plot_reactive() %>% 
-    line_plotly(x_col = year, 
-                  y_col = dollars,
-                  colour_col = market,
-                  log = "log10",
-                  scale_type = scales::comma,
-                  x_limits = c(input$slider_index_plot[1],input$slider_index_plot[2]),
-                  y_limits = c(min_dollars,max_dollars),
-                  x_breaks = scales::breaks_pretty(break_number),
-                  y_breaks = scales::trans_breaks('log10', function(x) 10^x),
-                  x_an = 1892,
-                  y_an = 50,
-                  # breaks = c(100,1000,10000,100000,1000000,10000000,100000000),
-                  lab_an = "$100 invested",
-                  user_axis_x_lab = T,
-                  user_axis_y_lab = T,
-                  x_label = "Year",
-                  y_label = "Dollars (AUD)") %>% 
-      layout(legend = list(orientation = "h",
-                           side = 'top',
-                           traceorder = 'normal',
-                           xanchor = "center",
-                           x = 0.3, 
-                           y = 1.15,
-                           title = list(text = '')))
-    
+  rolling_df <- reactive({
+    req(input$years)
+    rolling_full_df() %>%
+      filter(between(year, input$years[1], input$years[2]))
   })
-  
-  output$index_table <- DT::renderDT({
 
-    
-    DT::datatable(
-      data = data_index_plot_reactive() %>% 
-        pivot_wider(names_from = market, 
-                    values_from = dollars),
-      selection = list(target = 'column'),
-      # filter = list(position = 'top', clear = TRUE),
-      rownames = FALSE,
-      style = "bootstrap5",
-      class = "table-striped table-hover table-bordered compact",
-      extensions = 'Buttons',
-      options = list(orderClasses = TRUE,
-                     scrollY=TRUE,
-                     searching = TRUE,
-                     fixedColumns = TRUE,
-                     dom = 'lBfrtip',
-                     buttons = list(list(extend = 'colvisRestore',
-                                         text = "Restore all columns"),
-                                    list(extend = 'colvis',
-                                         text = "Add/Remove columns"),
-                                    list(extend = 'csv',
-                                         text = "Download csv",
-                                         title = "data",
-                                         exportOptions = list(columns = ':visible')
-                                    )),
-                     lengthMenu = list(c(10, 50, 100, -1),
-                                       c('10', '50', "100", 'All')),
-                     pageLength = 10,
-                     autoWidth = TRUE,
-                     paging = TRUE,
-                     info = TRUE,
-                     columnDefs = list(list(className = 'dt-center', targets = "_all"))
-                     
-      ))
+  cycles_df <- reactive({
+    req(input$cycle_months > 0)
+    pct <- rolling_df()$percent
+    y_mx <- (max(pct, na.rm = TRUE) - min(pct, na.rm = TRUE)) / 2
+    make_sine_wave(input$years[1], input$years[2],
+                   freq_in_months = input$cycle_months,
+                   y_min = -y_mx / 2,
+                   y_max = y_mx,
+                   offset = input$cycle_months_offset %||% 0)
   })
-  
-  
-  output$index_cagr_table <- renderDataTable({
 
-    req(data = data_index_plot_reactive())
+  #### headline figures in the series cards ####
+  shown <- reactive({
+    s <- input$show
+    if(length(s) == 0) series$key else s
+  })
+  
+  card_figs <- reactive({
+    df <- index_df()
+    y0 <- input$years[1]; y1 <- input$years[2]; n <- y1 - y0
+    lapply(setNames(seq_len(nrow(series)), series$key), function(i){
+      end <- df$dollars[df$market == series$market[i] & df$year == y1]
+      end <- if(length(end)) end else NA
+      rate <- if(n > 0 && !is.na(end)) (end / 100)^(1 / n) - 1 else NA
+      list(value = fmt_dollars(end),
+           rate = if(is.na(rate)) "" else sprintf("%.1f%% a year", rate * 100))
+    })
+  })
+  
+  lapply(series$key, function(k){
+    output[[paste0("val_", k)]] <- renderText(card_figs()[[k]]$value)
+    output[[paste0("rate_", k)]] <- renderText(card_figs()[[k]]$rate)
+  })
+  
+  output$stats_note <- renderUI({
+    div(class = "stats-note",
+        sprintf("$100 invested at the end of %s, valued at the end of %s, %s. Click a series to show or hide it.",
+                input$years[1], input$years[2],
+                if(real()) paste0("after inflation (", input$years[1], " dollars)") else "before inflation"))
+  })
+  
+  #### chart ####
+  output$chart_title <- renderUI({
+    real_txt <- if(real()) ", after inflation" else ""
+    switch(input$view,
+           growth = div(class = "chart-title",
+                        tags$h2(paste0("Growth of $100 invested in ", input$years[1], real_txt)),
+                        tags$p("Log scale: each gridline is ten times the one below, so equal slopes mean equal growth rates.")),
+           annual = div(class = "chart-title",
+                        tags$h2(paste0("Calendar-year returns", real_txt)),
+                        tags$p("Return in each year. Bonds show the 10-year yield at December.")),
+           rolling = div(class = "chart-title",
+                         tags$h2(paste0("Rolling ", input$window, "-year returns", real_txt)),
+                         tags$p(paste0("Average yearly return over the ", input$window,
+                                       " years ending in each year."))))
+  })
+  
+  output$chart <- renderPlotly({
+    yrs <- input$years
+    keep <- series$market[series$key %in% shown()]
+    switch(input$view,
+           growth = {
+             df <- index_df() %>% filter(market %in% keep)
+             line_plot(df %>% mutate(dollars = round(dollars)),
+                       y_col = "dollars",
+                       x_range = yrs,
+                       y_format = "$,.0f",
+                       tick_format = "$~s",
+                       log_y = TRUE,
+                       y_range = c(min(c(df$dollars, 100), na.rm = TRUE),
+                                   max(df$dollars, na.rm = TRUE)))
+           },
+           annual = line_plot(returns_df() %>% filter(market %in% keep),
+                              y_col = "percent_yoy",
+                              x_range = yrs,
+                              y_format = ".1%",
+                              tick_format = ".0%",
+                              hline = 0,
+                              bars = length(keep) == 1),   # one series reads better as columns
+           rolling = line_plot(rolling_df() %>% filter(market %in% keep),
+                               y_col = "percent",
+                               x_range = yrs,
+                               y_format = ".1%",
+                               tick_format = ".0%",
+                               hline = 0,
+                               cycles_data = if(isTRUE(input$add_cycles)) cycles_df()))
+  }) %>% bindCache(input$view, real(), input$years, shown(),
+                   if(identical(input$view, "rolling")) input$window,
+                   if(identical(input$view, "rolling") && isTRUE(input$add_cycles))
+                     c(input$cycle_months, input$cycle_months_offset))
+  
+  #### download: the data behind the current chart ####
+  output$download <- downloadHandler(
+    filename = function(){
+      paste0("australian-market-", input$view,
+             if(input$view == "rolling") paste0("-", input$window, "yr"),
+             "-", input$years[1], "-", input$years[2],
+             if(real()) "-real", ".csv")
+    },
+    content = function(file){
+      df <- switch(input$view,
+                   growth  = index_df() %>% mutate(value = round(dollars, 2)),
+                   annual  = returns_df() %>% mutate(value = percent_yoy),
+                   rolling = rolling_df() %>% mutate(value = percent))
+      df %>%
+        inner_join(series, by = "market") %>%
+        mutate(label = factor(label, levels = series$label)) %>%
+        select(year, label, value) %>%
+        arrange(label) %>%
+        pivot_wider(names_from = label, values_from = value) %>%
+        arrange(year) %>%
+        write.csv(file, row.names = FALSE, na = "")
+    })
 
-    data <- 
-      calc_table(data_index_plot_reactive(),
-                       input$slider_index_plot[1],
-                       input$slider_index_plot[2]) 
-
-    caption <- 
-      paste0("Between ",  input$slider_index_plot[1] , " and " ,input$slider_index_plot[2])
-   
-    
-     DT::datatable(
-      data = data,
-      caption = caption,
-      rownames = FALSE,
-      style = "bootstrap5",
-      class = "table-striped table-hover table-bordered compact",
-      options = list(
-        paging = FALSE,
-        info = FALSE,
-        searching = FALSE,
-        columnDefs = list(list(className = 'dt-center', targets = "_all")))
-      )  %>% 
-      formatPercentage(1:3,2)
+  #### about ####
+  observeEvent(input$about, {
+    showModal(modalDialog(includeHTML("about.Rhtml"),
+                          title = "About the data", size = "l",
+                          easyClose = TRUE, footer = modalButton("Close")))
   })
-  
-  output$returns_plot <- renderPlotly({
-    
-    if(input$slider_returns_plot[2]-input$slider_returns_plot[1] > 10){
-      break_number <- 10
-      
-    } else{
-      
-      break_number <- (input$slider_returns_plot[2]-input$slider_returns_plot[1])
-    }
-    
-    data_returns_plot() %>% 
-      line_plotly(x_col = year, 
-                  y_col = percent_yoy,
-                  colour_col = market,
-                  y_breaks = scales::breaks_pretty(6),
-                  scale_type = scales::percent_format(accuracy=1),
-                  x_limits = c(input$slider_returns_plot[1],input$slider_returns_plot[2]),
-                  x_breaks = scales::breaks_pretty(break_number),
-                  plotly = T,
-                  user_axis_x_lab = T,
-                  user_axis_y_lab = T,
-                  x_label = "Year",
-                  y_label = "Percent (YoY)") %>% 
-      layout(legend = list(orientation = "h",
-                           side = 'top',
-                           traceorder = 'normal',
-                           xanchor = "center",
-                           x = 0.3, 
-                           y = 1.15,
-                           title = list(text = '')))
-    
-  })
-  
-  output$returns_table <- DT::renderDT({
-    DT::datatable(
-      data = data_returns_plot() %>% 
-        pivot_wider(names_from = market, 
-                    values_from = percent_yoy),
-      selection = list(target = 'column'),
-      filter = list(position = 'top', clear = FALSE),
-      rownames = FALSE,
-      style = "bootstrap5",
-      class = "table-striped table-hover table-bordered compact",
-      extensions = 'Buttons',
-      options = list(orderClasses = TRUE,
-                     scrollY=TRUE,
-                     searching = TRUE,
-                     fixedColumns = TRUE,
-                     dom = 'lBfrtip',
-                     buttons = list(list(extend = 'colvisRestore',
-                                         text = "Restore all columns"),
-                                    list(extend = 'colvis',
-                                         text = "Add/Remove columns"),
-                                    list(extend = 'csv',
-                                         text = "Download csv",
-                                         title = "data",
-                                         exportOptions = list(columns = ':visible')
-                                    )),
-                     lengthMenu = list(c(10, 50, 100, -1),
-                                       c('10', '50', "100", 'All')),
-                     pageLength = 10,
-                     autoWidth = TRUE,
-                     paging = TRUE,
-                     info = TRUE,
-                     columnDefs = list(list(className = 'dt-center', targets = "_all"))
-                     
-      ))
-  })
-  
-  output$rolling_returns_plot <- renderPlotly({
-    
-    if(input$slider_returns_plot[2]-input$slider_returns_plot[1] > 10){
-      break_number <- 10
-      
-    } else{
-      
-      break_number <- (input$slider_returns_plot[2]-input$slider_returns_plot[1])
-    }
-    
-    if(input$add_cycles == FALSE){
-      cycles <- FALSE
-      cycles_input <- NULL
-      
-    }
-    else{
-      cycles <- TRUE
-      cycles_input <- data_cycles()
-        
-      
-    }
-    
-    
-    data_rolling_returns_plot() %>% 
-      line_plotly(x_col = year, 
-                  y_col = percent,
-                  colour_col = market,
-                  y_breaks = scales::breaks_pretty(6),
-                  scale_type = scales::percent_format(accuracy=1),
-                  x_limits = c(input$slider_rolling_returns_plot[1],input$slider_rolling_returns_plot[2]),
-                  x_breaks = scales::breaks_pretty(break_number),
-                  plotly = T,
-                  user_axis_x_lab = T,
-                  user_axis_y_lab = T,
-                  x_label = "Year",
-                  y_label = "Percent",
-                  add_cycles = cycles,
-                  cycles_data = cycles_input) %>% 
-      layout(legend = list(orientation = "h",
-                           side = 'top',
-                           traceorder = 'normal',
-                           xanchor = "center",
-                           x = 0.3, 
-                           y = 1.15,
-                           title = list(text = '')))
-    
-  })
-  
-  output$rolling_returns_table <- DT::renderDT({
-    DT::datatable(
-      data = data_rolling_returns_plot() %>% 
-        filter(market != "inflation") %>%
-        pivot_wider(names_from = market, 
-                    values_from = percent) %>% 
-        filter(if_all(c(`Stock Price`), ~ !is.na(.))),
-      selection = list(target = 'column'),
-      filter = list(position = 'top', clear = FALSE),
-      rownames = FALSE,
-      style = "bootstrap5",
-      class = "table-striped table-hover table-bordered compact",
-      extensions = 'Buttons',
-      options = list(orderClasses = TRUE,
-                     scrollY=TRUE,
-                     searching = TRUE,
-                     fixedColumns = TRUE,
-                     dom = 'lBfrtip',
-                     buttons = list(list(extend = 'colvisRestore',
-                                         text = "Restore all columns"),
-                                    list(extend = 'colvis',
-                                         text = "Add/Remove columns"),
-                                    list(extend = 'csv',
-                                         text = "Download csv",
-                                         title = "data",
-                                         exportOptions = list(columns = ':visible')
-                                    )),
-                     lengthMenu = list(c(10, 50, 100, -1),
-                                       c('10', '50', "100", 'All')),
-                     pageLength = 10,
-                     autoWidth = TRUE,
-                     paging = TRUE,
-                     info = TRUE,
-                     columnDefs = list(list(className = 'dt-center', targets = "_all"))
-                     
-      ))
-  })
-  
-  output$about_text <- renderText(about_text)
-  
-  
-
 }
 
 
-
-
-
-
-
-
-# Run the application ##########################################################  
+# Run the application ##########################################################
 shinyApp(ui = ui, server = server)
