@@ -235,7 +235,7 @@ line_plot <-
     ev_shapes <- lapply(ev$year, function(x) list(
       type = "line", xref = "x", x0 = x, x1 = x, yref = "paper", y0 = 0, y1 = 1, layer = "below",
       line = list(color = ink$axis, width = 1, dash = "dot")))
-    gap <- diff(x_range) * if(narrow) 0.18 else 0.07; last <- -Inf; ev_notes <- list()
+    gap <- diff(x_range) * if(narrow) 0.18 else 0.055; last <- -Inf; ev_notes <- list()
     for(i in seq_len(nrow(ev))) if(ev$year[i] - last >= gap){
       last <- ev$year[i]
       ev_notes <- c(ev_notes, list(list(
@@ -409,6 +409,19 @@ stacked_plot <- function(df, y_col, x_range,
 # compound yearly rate over a range (years after the first), as on the cards
 compound_rate <- function(r) if(length(r)) exp(mean(log1p(r))) - 1 else NA
 
+# Australia / United States (a shiny radio input); the page title follows it
+country_switch <- function(id){
+  tags$div(id = id, class = "shiny-input-radiogroup country-switch", role = "radiogroup",
+           `aria-label` = "Market",
+           lapply(names(countries), function(k){
+             bid <- paste0(id, "_", k)
+             tagList(tags$input(type = "radio", class = "btn-check", name = id, id = bid, value = k,
+                                autocomplete = "off", checked = if(k == "au") NA),
+                     tags$label(`for` = bid, countries[[k]]))
+           }),
+           tags$script(HTML(sprintf("$(document).on('change', '#%s input', function(){ document.getElementById('app-title').textContent = this.value === 'us' ? 'US Stock Market' : 'Australian Stock Market'; });", id))))
+}
+
 # small icon switch for overlay / stacked (a shiny radio input)
 layout_switch <- function(id, selected){
   icon_overlay <- HTML('<svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 10 L6 5 L10 8 L17 2"/><path d="M1 12 L6 9 L11 11 L17 7"/></svg>')
@@ -448,13 +461,19 @@ fall_stats <- function(year, dollars){
 
 # market events marked on the growth chart
 events <- tibble::tribble(
-  ~year, ~label,             ~short,
-  1893,  "1890s bank crash", "Bank crash",
-  1930,  "Depression",       "Depression",
-  1974,  "1974 crash",       "1974",
-  1987,  "1987 crash",       "1987",
-  2008,  "GFC",              "GFC",
-  2020,  "COVID",            "COVID")
+  ~country, ~year, ~label,             ~short,
+  "au",     1893,  "1890s bank crash", "Bank crash",
+  "au",     1930,  "Depression",       "Depression",
+  "au",     1974,  "1974 crash",       "1974",
+  "au",     1987,  "1987 crash",       "1987",
+  "au",     2008,  "GFC",              "GFC",
+  "au",     2020,  "COVID",            "COVID",
+  "us",     1907,  "1907 panic",       "1907",
+  "us",     1930,  "Depression",       "Depression",
+  "us",     1974,  "1974 crash",       "1974",
+  "us",     2000,  "Dot-com bust",     "Dot-com",
+  "us",     2008,  "GFC",              "GFC",
+  "us",     2020,  "COVID",            "COVID")
 
 # $12.4M, $148k, $1,234
 fmt_dollars <- function(x){
@@ -468,81 +487,96 @@ fmt_dollars <- function(x){
 ######################################################################
 #create final data frames
 ######################################################################
-australianstockmarket <- 
-  readRDS("data/australianstockmarket.RDS") %>% 
-  rbind(data.frame(
-    year = 1882,
-    stock_accumulation = NA, 
-    stock_price = NA, 
-    bonds = NA, 
-    inflation = NA  
-  ), .)
+# one country's annual returns (year, stock_accumulation, stock_price, bonds,
+# inflation) -> nominal and real returns and $100 indices in long format
+prep_market <- function(raw, max_year = Inf){
+  start <- min(raw$year) - 1           # the index starts at $100 the year before the first return
+  raw <- 
+    raw[, c("year", "stock_accumulation", "stock_price", "bonds", "inflation")] %>% 
+    filter(year <= max_year) %>% 
+    rbind(data.frame(
+      year = start,
+      stock_accumulation = NA, 
+      stock_price = NA, 
+      bonds = NA, 
+      inflation = NA  
+    ), .)
 
-#create new real return column and index columns for nominal and real returns
-stock_temp <- 
-  australianstockmarket %>% 
-  mutate(across(-c(year,inflation), 
-                ~calc_real_return(., inflation), .names = '{.col}_rr')) %>% 
-  mutate(across(c(stock_accumulation,stock_price,bonds,inflation), 
-                ~ifelse(year == 1882, 100, NA), .names = '{.col}_indx')) %>% 
-  mutate(stock_accumulation_indx = 
-           calc_index(stock_accumulation_indx, stock_accumulation , 1)) %>% 
-  mutate(stock_price_indx = 
-           calc_index(stock_price_indx, stock_price , 1))  %>% 
-  mutate(bonds_indx = 
-           calc_index(bonds_indx, bonds , 1)) %>% 
-  mutate(inflation_indx = 
-           calc_index(inflation_indx, inflation , 1)) %>%
-  mutate(across(c(stock_accumulation_rr,stock_price_rr,bonds_rr), 
-                ~ifelse(year == 1882, 100, NA), .names = '{.col}_indx')) %>% 
-  mutate(stock_accumulation_rr_indx = 
-           calc_index(stock_accumulation_rr_indx, stock_accumulation_rr , 1)) %>% 
-  mutate(stock_price_rr_indx = 
-           calc_index(stock_price_rr_indx, stock_price_rr , 1))  %>% 
-  mutate(bonds_rr_indx = 
-           calc_index(bonds_rr_indx, bonds_rr , 1))
+  #create new real return column and index columns for nominal and real returns
+  stock_temp <- 
+    raw %>% 
+    mutate(across(-c(year,inflation), 
+                  ~calc_real_return(., inflation), .names = '{.col}_rr')) %>% 
+    mutate(across(c(stock_accumulation,stock_price,bonds,inflation), 
+                  ~ifelse(year == start, 100, NA), .names = '{.col}_indx')) %>% 
+    mutate(stock_accumulation_indx = 
+             calc_index(stock_accumulation_indx, stock_accumulation , 1)) %>% 
+    mutate(stock_price_indx = 
+             calc_index(stock_price_indx, stock_price , 1))  %>% 
+    mutate(bonds_indx = 
+             calc_index(bonds_indx, bonds , 1)) %>% 
+    mutate(inflation_indx = 
+             calc_index(inflation_indx, inflation , 1)) %>%
+    mutate(across(c(stock_accumulation_rr,stock_price_rr,bonds_rr), 
+                  ~ifelse(year == start, 100, NA), .names = '{.col}_indx')) %>% 
+    mutate(stock_accumulation_rr_indx = 
+             calc_index(stock_accumulation_rr_indx, stock_accumulation_rr , 1)) %>% 
+    mutate(stock_price_rr_indx = 
+             calc_index(stock_price_rr_indx, stock_price_rr , 1))  %>% 
+    mutate(bonds_rr_indx = 
+             calc_index(bonds_rr_indx, bonds_rr , 1))
 
 
-min_yr <- min(australianstockmarket$year)
-max_yr <- max(australianstockmarket$year)
 
 
-#create nominal and real dataframes for returns and index in long format    
-stock_returns_nom <-
-  stock_temp %>% select(-contains("rr")) %>%   
-  select(year, !ends_with('indx')) %>% 
-  convert_to_tidy(val_to_name = 'percent_yoy') %>% 
-  mutate(market = recode(market,'bonds' = 'Bonds 10yr',
-                         'stock_price' = 'Stock Price',
-                         'stock_accumulation' = 'Stock Price + Div'))
+  #create nominal and real dataframes for returns and index in long format    
+  stock_returns_nom <-
+    stock_temp %>% select(-contains("rr")) %>%   
+    select(year, !ends_with('indx')) %>% 
+    convert_to_tidy(val_to_name = 'percent_yoy') %>% 
+    mutate(market = recode(market,'bonds' = 'Bonds 10yr',
+                           'stock_price' = 'Stock Price',
+                           'stock_accumulation' = 'Stock Price + Div'))
 
-stock_index_nom <- 
-  stock_temp %>% select(-contains("rr")) %>% 
-  select(year, ends_with('indx')) %>% 
-  mutate(across(c(-year), 
-                ~ifelse(year == 1882, 100, .))) %>% 
-  convert_to_tidy(val_to_name = 'dollars') %>% 
-  mutate(market = recode(market,'bonds_indx' = 'Bonds 10yr',
-                         'stock_price_indx' = 'Stock Price',
-                         'stock_accumulation_indx' = 'Stock Price + Div'))
+  stock_index_nom <- 
+    stock_temp %>% select(-contains("rr")) %>% 
+    select(year, ends_with('indx')) %>% 
+    mutate(across(c(-year), 
+                  ~ifelse(year == start, 100, .))) %>% 
+    convert_to_tidy(val_to_name = 'dollars') %>% 
+    mutate(market = recode(market,'bonds_indx' = 'Bonds 10yr',
+                           'stock_price_indx' = 'Stock Price',
+                           'stock_accumulation_indx' = 'Stock Price + Div'))
 
-stock_returns_real <-
-  stock_temp %>% select(year, contains("rr")) %>% 
-  select(year, !ends_with('indx'))  %>% 
-  convert_to_tidy(val_to_name = 'percent_yoy') %>% 
-  mutate(market = recode(market,'bonds_rr' = 'Bonds 10yr',
-                         'stock_price_rr' = 'Stock Price',
-                         'stock_accumulation_rr' = 'Stock Price + Div'))
+  stock_returns_real <-
+    stock_temp %>% select(year, contains("rr")) %>% 
+    select(year, !ends_with('indx'))  %>% 
+    convert_to_tidy(val_to_name = 'percent_yoy') %>% 
+    mutate(market = recode(market,'bonds_rr' = 'Bonds 10yr',
+                           'stock_price_rr' = 'Stock Price',
+                           'stock_accumulation_rr' = 'Stock Price + Div'))
 
-stock_index_real <- 
-  stock_temp %>% select(year, contains("rr")) %>% 
-  select(year, ends_with('indx')) %>% 
-  mutate(across(c(-year), 
-                ~ifelse(year == 1882, 100, .))) %>% 
-  convert_to_tidy(val_to_name = 'dollars') %>% 
-  mutate(market = recode(market,'bonds_rr_indx' = 'Bonds 10yr',
-                         'stock_price_rr_indx' = 'Stock Price',
-                         'stock_accumulation_rr_indx' = 'Stock Price + Div'))
+  stock_index_real <- 
+    stock_temp %>% select(year, contains("rr")) %>% 
+    select(year, ends_with('indx')) %>% 
+    mutate(across(c(-year), 
+                  ~ifelse(year == start, 100, .))) %>% 
+    convert_to_tidy(val_to_name = 'dollars') %>% 
+    mutate(market = recode(market,'bonds_rr_indx' = 'Bonds 10yr',
+                           'stock_price_rr_indx' = 'Stock Price',
+                           'stock_accumulation_rr_indx' = 'Stock Price + Div'))
+  
+  list(returns_nom = stock_returns_nom, index_nom = stock_index_nom,
+       returns_real = stock_returns_real, index_real = stock_index_real)
+}
+
+au_raw <- readRDS("data/australianstockmarket.RDS")
+us_raw <- readRDS("data/usstockmarket.RDS")    # built by code/us_data.R
+max_yr <- min(max(au_raw$year), max(us_raw$year))   # both countries cover the same years
+min_yr <- min(au_raw$year) - 1
+markets <- list(au = prep_market(au_raw, max_yr),
+                us = prep_market(us_raw, max_yr))
+countries <- c(au = "Australia", us = "United States")
 
 
 
@@ -561,8 +595,8 @@ rebase_index <- function(df, min_year, max_year){
 }
 
 # rolling returns over the full history for one window length
-rolling_full <- function(real, no_years){
-  create_rr_df(if(real) stock_index_real else stock_index_nom, 
+rolling_full <- function(mk, real, no_years){
+  create_rr_df(if(real) mk$index_real else mk$index_nom, 
                filter = T, no_years = no_years) %>% 
     ungroup() %>% 
     filter(market != "inflation_indx") %>% 
@@ -572,12 +606,18 @@ rolling_full <- function(real, no_years){
 ######################################################################
 # sources
 ######################################################################
-sources <- list(
+sources <- list(au = list(
   list("S&P Dow Jones Indices", "https://www.spglobal.com/spdji/en/indices/equity/all-ordinaries/#overview"),
   list("Reserve Bank of Australia", "https://www.rba.gov.au/statistics/tables"),
   list("Australian Bureau of Statistics", "https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release"),
-  list("Brailsford et al. (2012)", "https://research.bond.edu.au/en/publications/the-historical-equity-risk-premium-in-australia-post-gfc-and-128-")
-)
+  list("Brailsford et al. (2012)", "https://research.bond.edu.au/en/publications/the-historical-equity-risk-premium-in-australia-post-gfc-and-128-")),
+  us = list(
+  list("Robert J. Shiller, Online Data", "https://shillerdata.com/"),
+  list("Aswath Damodaran, NYU Stern", "https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histret.html")))
+source_links <- function(x) tagList(lapply(seq_along(x), function(i){
+  tagList(if(i > 1) " \u00b7 ",
+          tags$a(href = x[[i]][[2]], target = "_blank", rel = "noopener", x[[i]][[1]]))
+}))
 
 app_css <- "
 :root {
@@ -627,6 +667,12 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .form-switch .form-check-input { cursor: pointer; }
 .form-switch .form-check-input:focus { box-shadow: none; }
 
+.country-switch { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.country-switch label { display: inline-flex; align-items: center; height: 28px; padding: 0 11px; margin: 0; cursor: pointer; color: var(--ink-3); font-size: .82rem; white-space: nowrap; }
+.country-switch label + input + label { border-left: 1px solid var(--line-2); }
+.country-switch label:hover { color: var(--ink); }
+.country-switch .btn-check:checked + label { color: var(--ink); background: var(--line); }
+.country-switch .btn-check:focus-visible + label { outline: 2px solid var(--ink-3); outline-offset: -2px; }
 .layout-switch { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
 .layout-switch label { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 26px; margin: 0; cursor: pointer; color: var(--ink-3); }
 .layout-switch label + input + label { border-left: 1px solid var(--line-2); }
@@ -778,15 +824,16 @@ series_toggles <- function(id){
 
 ui <- page(
   theme = app_theme,
-  title = "Australian Stock Market",
+  title = "Australian & US Stock Markets",
   tags$head(tags$style(HTML(app_css))),
   
   div(class = "app",
       
       div(class = "app-header",
-          div(tags$h1("Australian Stock Market"),
+          div(tags$h1(id = "app-title", "Australian Stock Market"),
               tags$p(paste0("Shares, dividends and government bonds, ", min_yr, "–", max_yr, "."))),
           div(class = "header-actions",
+              country_switch("country"),
               actionLink("about", "About the data", class = "about-link"),
               input_dark_mode(id = "mode"))),
       
@@ -832,11 +879,8 @@ $(document).on('change', '#view input', function(){ var l = document.querySelect
               downloadButton("download", "Download data (CSV)", class = "btn-quiet"))),
       
       div(class = "app-footer",
-          "Sources: ",
-          tagList(lapply(seq_along(sources), function(i){
-            tagList(if(i > 1) " · ",
-                    tags$a(href = sources[[i]][[2]], target = "_blank", rel = "noopener", sources[[i]][[1]]))
-          })))
+          div("Sources, Australia: ", source_links(sources$au)),
+          div("Sources, United States: ", source_links(sources$us)))
   )
 )
 
@@ -851,17 +895,19 @@ server <- function(input, output, session) {
                              falls   = !identical(input$layout_falls, "overlay"),
                              FALSE))
   theme <- reactive(if(identical(input$mode, "dark")) "dark" else "light")
+  country <- reactive(if(identical(input$country, "us")) "us" else "au")
+  mk <- reactive(markets[[country()]])
 
   # index rebased to $100 at the first selected year (unrounded)
   index_df <- reactive({
     req(input$years)
-    rebase_index(if(real()) stock_index_real else stock_index_nom,
+    rebase_index(if(real()) mk()$index_real else mk()$index_nom,
                  input$years[1], input$years[2])
   })
 
   returns_df <- reactive({
     req(input$years)
-    (if(real()) stock_returns_real else stock_returns_nom) %>%
+    (if(real()) mk()$returns_real else mk()$returns_nom) %>%
       filter(market != "inflation",
              between(year, input$years[1], input$years[2]))
   })
@@ -869,8 +915,8 @@ server <- function(input, output, session) {
   # full-history rolling returns: depend only on window and real/nominal,
   # so slider moves just filter. Cached app-wide on first use.
   rolling_full_df <- reactive({
-    rolling_full(real(), as.numeric(input$window))
-  }) %>% bindCache(real(), input$window)
+    rolling_full(mk(), real(), as.numeric(input$window))
+  }) %>% bindCache(country(), real(), input$window)
 
   rolling_df <- reactive({
     req(input$years)
@@ -1034,7 +1080,8 @@ server <- function(input, output, session) {
                        log_y = TRUE,
                        y_range = c(min(c(df$dollars, 100), na.rm = TRUE),
                                    max(df$dollars, na.rm = TRUE)),
-                       events = events, narrow = isTRUE(input$narrow),
+                       events = events[events$country == country(), ],
+                       narrow = isTRUE(input$narrow),
                        theme = theme())
            },
            annual = {
@@ -1092,14 +1139,14 @@ server <- function(input, output, session) {
                        theme = theme())
              }
            })
-  }) %>% bindCache(input$view, real(), input$years, shown(), theme(), stacked(),
+  }) %>% bindCache(country(), input$view, real(), input$years, shown(), theme(), stacked(),
                    if(identical(input$view, "rolling")) input$window,
                    if(identical(input$view, "growth")) isTRUE(input$narrow))
   
   #### download: the data behind the current chart ####
   output$download <- downloadHandler(
     filename = function(){
-      paste0("australian-market-", input$view,
+      paste0(if(country() == "us") "us" else "australian", "-market-", input$view,
              if(input$view == "rolling") paste0("-", input$window, "yr"),
              "-", input$years[1], "-", input$years[2],
              if(real()) "-real", ".csv")

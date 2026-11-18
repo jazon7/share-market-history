@@ -1,541 +1,134 @@
-library(rvest)
-library(tidyverse)
-library(readxl)
-library(httr)
-library(writexl)
+#######################################################
+# Update the Australian annual series (data/australianstockmarket.RDS/.csv)
+# with every complete year that is missing.
+#
+# Each year, around February-March:
+#   1. In a browser, export the S&P/ASX All Ordinaries from S&P Dow Jones
+#      Indices (https://www.spglobal.com/spdji/en/indices/equity/all-ordinaries/):
+#      the price return and the total return series, covering at least the
+#      whole of the December just ended. S&P blocks automated downloads, so
+#      this is the one manual step.
+#   2. Run from the project root:
+#        Rscript code/update.R <price_return.xls> <total_return.xls>
+#      (defaults: data/ord.xls and data/ord_tr.xls)
+#
+# What it does
+# - Shares: December average of the daily index (the method of Brailsford et
+#   al. used from 2006). December averages are kept in
+#   data/au_december_index.csv, so each update only needs the latest December.
+# - Bonds: RBA table F2, the last December observation of the Australian
+#   Government 10-year bond yield (downloaded automatically).
+# - Inflation: ABS monthly CPI (All groups, Australia), December to December
+#   (downloaded automatically). Years before 2025 used the December quarter.
+# - Checks that the stored December averages still reproduce the shares
+#   returns already in the dataset before adding anything.
+# - Then rebuilds the US series (code/us_data.R, fully automatic), since the
+#   app shows only the years both markets cover.
+#######################################################
+suppressMessages(library(dplyr))
 
-# README ------------------------------------------------------------------
-# Execute this code to update the Australian Stock Market Annual Returns to
-# latest available year. The bottleneck for data availability is CPI from the ABS. 
-# The December CPI results are released in Feb/March the 
-# following year.
+args <- commandArgs(TRUE)
+price_file <- if(length(args) >= 1) args[1] else "data/ord.xls"
+tr_file    <- if(length(args) >= 2) args[2] else "data/ord_tr.xls"
 
+data_file <- "data/australianstockmarket.RDS"
+dec_file  <- "data/au_december_index.csv"
 
-# Code --------------------------------------------------------------------
-
-#import the base dataset
-australianstockmarket <- 
-  readRDS("data/archive/australianstockmarket_2023.RDS") %>% 
-  rbind(data.frame(
-    year = 1882,
-    stock_accumulation = NA, 
-    stock_price = NA, 
-    bonds = NA, 
-    inflation = NA  
-  ), .)
-#set the update year as the first of March of the next year in the series
-update_year <- 
-  australianstockmarket$year %>% 
-  max() + 2
-
-update_date <-
-  paste0(update_year,"-03","-01") %>% 
-  as.Date
-
-
-# function to extract the creation date of a file  -----------------------
-find_create_date_of_file <- function(path) {
-  return(as.Date(file.info(path)$ctime))
+dl <- function(url, name){
+  f <- file.path(tempdir(), name)
+  download.file(url, f, mode = "wb", quiet = TRUE)
+  f
 }
 
-# function to remove na and extract year and month from date into --------
-clean_df <- function(df){
-  df <- na.omit(df)
-  df$date <- as.Date(df$date)
-  df$year <- year(ymd(df$date))
-  df$month <- month(ymd(df$date))
-  df$day <- as.numeric(format(
-    df$date, 
-    format="%d")) 
-  return(df)
+#### shares: December averages from S&P exports ####
+# S&P exports have a few header rows, then Excel serial dates and levels
+read_sp <- function(f){
+  x <- suppressMessages(readxl::read_excel(f, col_names = FALSE, col_types = "text"))
+  s <- suppressWarnings(as.numeric(x[[1]])); v <- suppressWarnings(as.numeric(x[[2]]))
+  ok <- !is.na(s) & !is.na(v) & s > 30000
+  data.frame(date = as.Date(s[ok], origin = "1899-12-30"), index = v[ok])
 }
-
-
-# function to create summary table of Dec Ave index value and % c --------
-dec_summary <- function(df){
-  df %>% 
-    group_by(year, month) %>% 
-    summarise(ave_index = round(mean(index),2)) %>%
-    ungroup() %>% 
-    filter(month == 12) %>% 
-    as.data.frame() %>% 
-    mutate(pct_change = 
-             (ave_index-(lag(ave_index,1))) / 
-             lag(ave_index,1)) %>% 
-    as_tibble()
-  
+dec_avg <- function(d){
+  d %>% filter(format(date, "%m") == "12") %>%
+    group_by(year = as.integer(format(date, "%Y"))) %>%
+    summarise(avg = mean(index), days = n(), .groups = "drop") %>%
+    filter(days >= 15)                           # a whole December, not a partial one
 }
+new_dec <- full_join(dec_avg(read_sp(price_file)) %>% select(year, price = avg),
+                     dec_avg(read_sp(tr_file))    %>% select(year, total_return = avg),
+                     by = "year")
+old_dec <- if(file.exists(dec_file)) read.csv(dec_file) else new_dec[0, ]
+december <- bind_rows(new_dec, old_dec %>% filter(!year %in% new_dec$year)) %>%
+  arrange(year) %>% filter(!is.na(price), !is.na(total_return))
 
+#### bonds: RBA F2 ####
+f <- dl("https://www.rba.gov.au/statistics/tables/xls/f02d.xlsx", "f02d.xlsx")
+x <- suppressMessages(readxl::read_excel(f, col_names = FALSE, col_types = "text"))
+col <- which(unlist(x[2, ]) == "Australian Government 10 year bond")
+stopifnot(length(col) == 1)
+s <- suppressWarnings(as.numeric(x[[1]])); v <- suppressWarnings(as.numeric(x[[col]]))
+bonds <- data.frame(date = as.Date(s, origin = "1899-12-30"), yield = v) %>%
+  filter(!is.na(date), !is.na(yield), format(date, "%m") == "12") %>%
+  group_by(year = as.integer(format(date, "%Y"))) %>%
+  slice_max(date, n = 1) %>% ungroup() %>%
+  transmute(year, bonds = yield / 100)
 
-# function to downnload source data (csv,xls,xlsx) to data/source --------
-download_file <- function(url, file_name, mode, type){
-  
-  headers = c(
-    `user-agent` = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.5005.61 Safari/537.36'
-  )
-  
-  dest_file <-
-    paste0("./data/",
-           file_name,
-           type)
-  
-  if (!file.exists(dest_file)){
-    print(paste0("Downloading... ", file_name, type, "....."))
-    download.file(url = url,
-                  destfile = dest_file,
-                  mode = mode,
-                  headers = headers)
-  } else if (file.exists(dest_file)
-             & find_create_date_of_file("data/cpi.xlsx") < update_date
-             & Sys.Date() > update_date)
-  {
-    print(paste0("Updating... ", file_name, type, "....."))
-    download.file(url = url,
-                  destfile = dest_file,
-                  mode = mode,
-                  headers = headers)
-    
-  }else{
-    print(paste0(file_name,type," is up to date"))
-  }
-  
-}
+#### inflation: ABS monthly CPI ####
+page <- paste(readLines("https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release",
+                        warn = FALSE), collapse = "")
+link <- regmatches(page, regexpr("/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/[a-z0-9-]+/640101\\.xlsx", page))
+stopifnot(length(link) == 1)
+x <- suppressMessages(readxl::read_excel(dl(paste0("https://www.abs.gov.au", link), "640101.xlsx"),
+                                         sheet = "Data1", col_names = FALSE, col_types = "text"))
+col <- which(grepl("All groups CPI ;  Australia", unlist(x[1, ])) & unlist(x[4, ]) == "INDEX")[1]
+s <- suppressWarnings(as.numeric(x[[1]]))
+cpi <- data.frame(date = as.Date(s, origin = "1899-12-30"), index = suppressWarnings(as.numeric(x[[col]]))) %>%
+  filter(!is.na(date), !is.na(index), format(date, "%m") == "12") %>%
+  transmute(year = as.integer(format(date, "%Y")), index) %>%
+  arrange(year) %>%
+  mutate(inflation = ifelse(year - lag(year) == 1, index / lag(index) - 1, NA)) %>%
+  filter(!is.na(inflation))
 
+#### combine ####
+au <- readRDS(data_file)
+returns <- december %>%
+  arrange(year) %>%
+  mutate(stock_accumulation = round(total_return / lag(total_return) - 1, 3),
+         stock_price        = round(price / lag(price) - 1, 3),
+         gap = year - lag(year)) %>%
+  filter(gap == 1)
 
-# function to web scrape abs web page to find latest cpi release  --------
-find_cpi_release <- function(){
-  
-  page <-
-    read_html("https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release")
-  
-  links <-
-    page %>%
-    html_nodes("a")%>%
-    html_attr("href")
-  
-  indx <-
-    match(1,
-          str_detect(links, "quarter"))
-  
-  chr <-
-    links[indx]
-  
-  out <-
-    sub(".*consumer-price-index-australia/", "", chr)
-  
-  return(out)
-}
+# the stored December averages must reproduce the shares returns already published
+check <- inner_join(returns, au, by = "year", suffix = c("", "_published"))
+bad <- check %>% filter(abs(stock_accumulation - stock_accumulation_published) > 0.0015 |
+                          abs(stock_price - stock_price_published) > 0.0015)
+cat("Checked", nrow(check), "published years against the S&P December averages:",
+    if(nrow(bad)) "MISMATCH" else "all match", "\n")
+if(nrow(bad)){ print(bad); stop("December averages do not reproduce the published returns; not updating.") }
 
-# function to get cpi based on year input ---------------------------------
-get_cpi <- 
-  function(yr){
-    
-    cpi_dec_exist <- 
-      cpi %>% 
-      filter(year == yr & 
-               month == 12) %>% 
-      pull()
-    
-    if(length(cpi_dec_exist == 0)){
-      
-      latest_return <- cpi %>% 
-        filter(year == yr, month == 12) %>% 
-        select(pct_change_yoy) %>% 
-        pull()
-    }
-    else{
-      
-      latest_return <- NA
-      
-    }
-    
-    return(round(latest_return,3))
-    
-  }
+new <- returns %>%
+  filter(year > max(au$year)) %>%
+  select(year, stock_accumulation, stock_price) %>%
+  inner_join(bonds, by = "year") %>%
+  inner_join(cpi %>% transmute(year, inflation = round(inflation, 3)), by = "year")
 
-
-# variable to store cpi file name to download from abs website -----------
-cpi_xlsx_file <- 
-  paste0("https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/",
-         find_cpi_release(),
-         "/640101.xlsx")
-
-# download All Ordinaries Total Return index fromspglobal to data --------
-url <- "https://www.spglobal.com/spdji/en/idsexport/file.xls?hostIdentifier=48190c8c-42c4-46af-8d1a-0cd5db894797&redesignExport=true&languageId=1&selectedModule=PerformanceGraphView&selectedSubModule=Graph&yearFlag=tenYearFlag&indexId=124632"
-
-headers <- c(
-  "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-)
-
-response <- httr::GET(url, add_headers(.headers=headers))
-
-if (status_code(response) == 200) {
-  writeBin(content(response, "raw"), "data/ord_tr.xls")
-  print("File downloaded successfully")
+write.csv(december, dec_file, row.names = FALSE)
+if(!nrow(new)){
+  cat("No new complete year (shares, bonds and CPI all needed). Latest:", max(au$year), "\n")
 } else {
-  print(paste("Failed to download file. Status code:", status_code(response)))
+  au <- bind_rows(au, as.data.frame(new)) %>% arrange(year)
+  stopifnot(all(diff(au$year) == 1), !anyNA(au))
+  saveRDS(au, data_file)
+  write.csv(au, "data/australianstockmarket.csv", eol = "\r\n")   # file has Windows line endings
+  cat("Added", paste(new$year, collapse = ", "), "\n"); print(new)
 }
 
-
-# download All Ordinaries Price index from spglobal to data direc --------
-url <- "https://www.spglobal.com/spdji/en/idsexport/file.xls?hostIdentifier=48190c8c-42c4-46af-8d1a-0cd5db894797&redesignExport=true&languageId=1&selectedModule=PerformanceGraphView&selectedSubModule=Graph&yearFlag=tenYearFlag&indexId=124533"
-
-headers <- c(
-  "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-)
-
-response <- GET(url, add_headers(.headers=headers))
-
-if (status_code(response) == 200) {
-  writeBin(content(response, "raw"), "data/ord.xls")
-  print("File downloaded successfully")
-} else {
-  print(paste("Failed to download file. Status code:", status_code(response)))
-}
-
-
-
-# download Austrlaian Government 10 Year bonds to data directory ---------
-download_file(url =
-                "https://www.rba.gov.au/statistics/tables/xls/f02d.xlsx",
-              file_name = "bonds",
-              mode = "wb",
-              type = ".xlsx")
-
-
-# download cpi index from ABS --------------------------------------------
-download_file(cpi_xlsx_file,
-              file_name = 'cpi', 
-              mode = "wb",
-              type = ".xlsx")
-
-
-#################################################################################
-##function to get cpi based on year input
-#################################################################################
-get_cpi <- 
-  function(yr){
-    
-    cpi_dec_exist <- 
-      cpi %>% 
-      filter(year == yr & 
-               month == 12) %>% 
-      pull()
-    
-    if(length(cpi_dec_exist == 0)){
-      
-      latest_return <- cpi %>% 
-        filter(year == yr, month == 12) %>% 
-        select(pct_change_yoy) %>% 
-        pull()
-    }
-    else{
-      
-      latest_return <- NA
-      
-    }
-    
-    return(round(latest_return,3))
-    
-  }
-
-
-######################################################################
-#ASX market data
-######################################################################
-# read total return data into data frame
-ord_tr <- 
-  read_excel("data/ord_tr.xls", 
-             skip = 6, 
-             col_types = c("date","numeric"),
-             col_names = c("date", "index"),
-             trim_ws = T) 
-
-# read price return data into data frame
-ord <- 
-  read_excel("data/ord.xls", 
-             skip = 6, 
-             col_types = c("date","numeric"),
-             col_names = c("date", "index"),
-             trim_ws = T) 
-
-# clean all ordinaries total return 
-ord_tr <- 
-  clean_df(ord_tr)
-
-# clean all ordinaries price return
-ord <- 
-  clean_df(ord)
-
-#table of December average index value (total return) and % change YOY
-dec_tr <- 
-  dec_summary(ord_tr)
-
-#table of December average index value (price) and % change YOY
-dec_ord <- 
-  dec_summary(ord)
-
-
-######################################################################
-#cpi data
-######################################################################
-
-# extract headers from cpi xlsx file
-headers_cpi <- 
-  read_excel("data/cpi.xlsx", 
-             sheet = "Data1",
-             col_names = FALSE,
-             skip = 0, 
-             n_max = 1)
-
-#read cpi data into data frame
-cpi <- 
-  read_excel("data/cpi.xlsx",
-             skip = 9,
-             sheet = "Data1",
-             col_types = "guess",
-             trim_ws = T,
-             col_names = T) 
-
-headers_cpi <- 
-  cbind(" " = "date", headers_cpi)
-
-colnames(cpi) <- 
-  headers_cpi
-
-cpi <- 
-  cpi %>% 
-  select(c("date","Index Numbers ;  All groups CPI ;  Australia ;"))
-
-# cpi <- 
-#   cpi[c(1,10)] %>% 
-#   as.data.frame() 
-
-
-colnames(cpi)[2] <- 
-  "index"
-
-cpi$date <- 
-  as.Date(cpi$date)
-
-#create column calculating the percent change cpi year on year 
-cpi <- 
-  cpi %>% 
-  mutate(pct_change_yoy = (index - lag(index,4)) / lag(index,4)) %>% 
-  as_tibble()
-
-cpi <- 
-  clean_df(cpi)
-
-
-######################################################################
-#bonds data
-######################################################################
-
-#extract headers from bonds xls file
-headers_bonds <- 
-  read_excel("data/bonds.xlsx",
-             col_names = FALSE,
-             skip = 1, 
-             n_max = 1)
-
-#rename headers first column to date
-headers_bonds[1] <- "date"
-
-#read bonds data into data frame 
-bonds <- 
-  read_excel("data/bonds.xlsx",
-             skip = 10,
-             trim_ws = T,
-             col_types = "guess")
-
-#set column names of bonds dataframe from extracted headers
-colnames(bonds) <- 
-  headers_bonds
-
-#convert date column to date format
-bonds$date <- 
-  as.Date(bonds$date, format = "%d-%b-%Y")
-
-#select only 10 year government bonds column
-bonds <- 
-  bonds %>% 
-  select(date,`Australian Government 10 year bond`)
-
-#clean bonds data
-bonds <- 
-  clean_df(bonds)
-
-
-
-####################################
-#set current year from system date
-####################################
-current_year <- 
-  as.integer(format(
-    Sys.Date(),
-    "%Y"))
-
-####################################
-#find max of given column.
-####################################
-find_max_column <- 
-  function(df, col){
-    
-    year <- df %>% 
-      select({{col}}) %>%
-      max() %>% 
-      as.integer()
-    
-    return(year)
-  }
-
-####################################
-#find min of given column
-####################################
-find_min_column <- 
-  function(df, col){
-    
-    year <- df %>% 
-      select({{col}}) %>%
-      min() %>% 
-      as.integer()
-    
-    return(year)
-  }
-
-#################################################################################
-##function to get cpi based on year input
-#################################################################################
-get_cpi <- 
-  function(yr){
-    
-    cpi_dec_exist <- 
-      cpi %>% 
-      filter(year == yr & 
-               month == 12) %>% 
-      pull()
-    
-    if(length(cpi_dec_exist == 0)){
-      
-      latest_return <- cpi %>% 
-        filter(year == yr, month == 12) %>% 
-        select(pct_change_yoy) %>% 
-        pull()
-    }
-    else{
-      
-      latest_return <- NA
-      
-    }
-    
-    return(round(latest_return,3))
-    
-  }
-
-#################################################################################
-#function to get all ordinaries total return based on year input
-#################################################################################
-get_total_return <- 
-  function(yr){
-    
-    latest_return <- 
-      dec_tr %>% 
-      filter(year == yr, month == 12) %>% 
-      select(pct_change) %>% 
-      pull()
-    
-    return(round(latest_return,3))
-    
-  }
-
-#################################################################################
-#function to get all ordinaries price return based on year input
-#################################################################################
-get_price_return <- 
-  function(yr){
-    
-    latest_return <- 
-      dec_ord %>% 
-      filter(year == yr, month == 12) %>% 
-      select(pct_change) %>% 
-      pull()
-    
-    return(round(latest_return,3))
-    
-  }
-
-#########################################################################
-#function to retreive the latest day of available data based on the year
-#########################################################################
-max_day_bonds <- 
-  function(yr){
-    
-    out <- bonds %>% 
-      filter(month == 12 & year == yr) %>% 
-      summarise(max = max(day))
-    return (as.numeric(out))
-  }
-
-#########################################################################
-#function to get bonds based on year input
-#########################################################################
-get_bonds <- 
-  function(yr){
-    
-    #set day as latest day of available bonds data
-    dy <- 
-      max_day_bonds(yr)
-    
-    return_bonds <- 
-      bonds %>% 
-      filter(year == yr & month == 12 & day == dy) %>% 
-      select(`Australian Government 10 year bond`) %>% 
-      pull()
-    
-    return(return_bonds/100)
-    
-  }
-
-
-####################################
-#function to update annual return data 
-#with latest stock tr , price, bonds, and inflation
-####################################
-update_data <- function(df, latest_year) {
-  new_row <-  c(latest_year,
-                get_total_return(latest_year),
-                get_price_return(latest_year),
-                get_bonds(latest_year),
-                get_cpi(latest_year)
-  )
-  
-  df <-
-    rbind(df, new_row)
-  
-  return(df)
-}
-
-
-#find latest year for data
-latest_year <- 
-  find_max_column(dec_ord, 
-                  year)
-#check if current month is March of the update year and if so update the dataset
-if (year(Sys.Date()) == update_year & month(Sys.Date()) >= 3) {
-  print("Updating Data. This may take a while..........")
-  
-  update_data(australianstockmarket, latest_year) %>% 
-    drop_na() %>%
-    saveRDS(paste0("data/australianstockmarket.RDS"))
-
-  update_data(australianstockmarket, latest_year) %>%
-    drop_na() %>%
-    write.csv(paste0("data/australianstockmarket.csv"))
-  
-  
-  print(paste("Stock market series has been updated", latest_year))
-
-} else {
-  print(paste0("Data not available until ", update_date, ". Try again on this date."))
-}
+#### United States: rebuilt automatically from Shiller and Damodaran ####
+# The app shows the years both markets cover, so update the US series too.
+us_ok <- tryCatch({ source("code/us_data.R", local = new.env()); TRUE },
+                  error = function(e){ cat("US update failed, US data left as it was:", conditionMessage(e), "\n"); FALSE })
+au_last <- max(readRDS(data_file)$year); us_last <- max(readRDS("data/usstockmarket.RDS")$year)
+cat(sprintf("Latest year: Australia %d, United States %d. The app shows up to %d.\n",
+            au_last, us_last, min(au_last, us_last)))
+if(us_ok && us_last < au_last)
+  cat("The US sources do not have", au_last, "yet; run this again in a few weeks.\n")

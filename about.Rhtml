@@ -1,13 +1,13 @@
 <h3>Introduction</h3>
 <p>
-  This app provides a comprehensive, up-to-date long-term history of the Australian stock market, spanning from 1883 to today.
-  It features annual returns for:
+  This app provides a long-term history of the Australian stock market from 1883 to today, with a matching
+  United States series for comparison (switch markets at the top of the page). For each market it features annual returns for:
 </p>
 <ul>
-  <li>The Australian stock price index</li>
+  <li>The stock price index</li>
   <li>The stock price index with dividends reinvested</li>
-  <li>Australian Government 10-year bonds</li>
-  <li>The Australian Consumer Price Index (CPI)</li>
+  <li>10-year government bonds</li>
+  <li>The Consumer Price Index (CPI)</li>
 </ul>
 <p>
   These annual returns are used to construct both nominal and inflation-adjusted long-term indices, as well as
@@ -16,7 +16,7 @@
 
 <hr>
 
-<h3>Data Methodology</h3>
+<h3>Australian data</h3>
 
 <h4>Primary Sources</h4>
 <p>
@@ -94,6 +94,55 @@
     </a>
   </li>
 </ol>
+<p>
+  Since 2025 the ABS publishes a monthly CPI, so inflation from 2025 is December to December
+  rather than December quarter to December quarter. The All Ordinaries are exported by hand each year from S&amp;P Dow Jones Indices
+  and processed with <code>code/update.R</code>, which first checks that it reproduces the previously published years.
+</p>
+
+<hr>
+
+<h3>United States data</h3>
+<p>
+  The US series cover the same years and follow the same layout as the Australian ones. They combine two public datasets:
+</p>
+<ul>
+  <li>
+    Robert J. Shiller,
+    <a href="https://shillerdata.com/" target="_blank" rel="noopener">Online Data</a>
+    (<em>ie_data.xls</em>): monthly S&amp;P Composite prices, dividends, CPI and long-term government bond yields from 1871,
+    as used in his book <em>Irrational Exuberance</em>.
+  </li>
+  <li>
+    Aswath Damodaran,
+    <a href="https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histret.html" target="_blank" rel="noopener">
+      Historical Returns on Stocks, Bonds and Bills</a>,
+    NYU Stern School of Business: year-end S&amp;P 500 levels and returns from 1928.
+  </li>
+</ul>
+<ol>
+  <li>
+    <strong>Stock indices, 1883–1927:</strong> Shiller's data, December to December. Shiller's prices are monthly averages of
+    daily closes, and the total return adds one twelfth of the annual dividend each month, as in Shiller's own total return series.
+  </li>
+  <li>
+    <strong>Stock indices, 1928 on:</strong> Damodaran's year-end S&amp;P 500 level (price) and S&amp;P 500 return with dividends.
+    These match commonly quoted calendar-year returns (for example −37% in 2008), which December averages do not.
+  </li>
+  <li>
+    <strong>10-year bonds:</strong> Shiller's December long-term government bond yield (the 10-year Treasury yield in recent decades),
+    used as that year's return, the same treatment as the Australian bonds. Bond price changes are not included.
+  </li>
+  <li>
+    <strong>Inflation (CPI):</strong> December-to-December change in Shiller's CPI series (the US Consumer Price Index from 1913,
+    earlier estimates before that).
+  </li>
+</ol>
+<p>
+  <strong>Comparing the two markets:</strong> the Australian share series use December averages from 2006 and the US series use
+  year-end values from 1928, so individual years can differ by a few points for that reason alone. Long-run growth rates are unaffected.
+  Each market is shown in its own currency.
+</p>
 
 <hr>
 
@@ -101,8 +150,14 @@
 <ul>
   <li>
     <a href="https://raw.githubusercontent.com/jazon7/australianstockmarketapp/main/data/australianstockmarket.csv" target="_blank" rel="noopener">
-      Download the full dataset (CSV)
+      Download the Australian dataset (CSV)
     </a>
+  </li>
+  <li>
+    <a href="https://raw.githubusercontent.com/jazon7/australianstockmarketapp/main/data/usstockmarket.csv" target="_blank" rel="noopener">
+      Download the US dataset (CSV)
+    </a>
+    (built by <a href="https://github.com/jazon7/australianstockmarketapp/blob/main/code/us_data.R" target="_blank" rel="noopener">code/us_data.R</a>)
   </li>
   <li>
     <a href="https://github.com/jazon7/australianstockmarketapp" target="_blank" rel="noopener">
