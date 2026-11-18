@@ -111,16 +111,24 @@ create_rr_df <- function(df, filter = F, no_years = NULL){
 }
 
 series <- tibble::tribble(
-  ~key,    ~market,             ~label,                 ~short,          ~colour,
-  "div",   "Stock Price + Div", "Shares + dividends",   "Shares + div",  "#2c5b9a",
-  "price", "Stock Price",       "Shares (price only)",  "Shares",        "#c4692f",
-  "bonds", "Bonds 10yr",        "10-year govt bonds",   "Bonds",         "#2a8f73"
+  ~key,    ~market,             ~label,                 ~short,          ~colour,   ~colour_dark,
+  "div",   "Stock Price + Div", "Shares + dividends",   "Shares + div",  "#2c5b9a", "#5b8ed4",
+  "price", "Stock Price",       "Shares (price only)",  "Shares",        "#c4692f", "#cf7a42",
+  "bonds", "Bonds 10yr",        "10-year govt bonds",   "Bonds",         "#2a8f73", "#35a384"
 )
-# palette validated with dataviz validate_palette.js (light, all pairs): all checks pass.
+# palettes validated with dataviz validate_palette.js, all pairs: light on #fdfdfb and
+# dark on #161615 both pass every check (dark steps are their own, not an inversion).
 # Lines also carry direct end labels, so identity never relies on colour alone.
 
-ink <- list(primary = "#111110", secondary = "#4f4e4a", muted = "#8a8882",
-            grid = "#eeede8", axis = "#a9a79f", zero = "#8a8882")
+# chart chrome per theme (page colours mirror the CSS variables)
+inks <- list(
+  light = list(primary = "#111110", secondary = "#4f4e4a", muted = "#8a8882",
+               grid = "#eeede8", axis = "#a9a79f", zero = "#8a8882", page = "#fcfcfa",
+               hover_bg = "#ffffff", hover_border = "#d6d4cc", band = 0.08),
+  dark  = list(primary = "#ecebe7", secondary = "#bdbcb5", muted = "#86847e",
+               grid = "#252523", axis = "#4a4945", zero = "#6e6d67", page = "#141413",
+               hover_bg = "#1d1d1c", hover_border = "#3a3a37", band = 0.13))
+series_colours <- function(theme) setNames(if(theme == "dark") series$colour_dark else series$colour, series$label)
 
 # spread end labels so they don't collide: positions in axis units
 spread_labels <- function(y, min_gap){
@@ -148,8 +156,9 @@ line_plot <-
            log_y = FALSE,
            y_range = NULL,       # in data units
            hline = NULL,
-           bars = FALSE,         # columns instead of lines (single series)
-           band = NULL){         # list(lo, hi, med, colour): typical-range band
+           band = NULL,          # list(lo, hi, med, colour): typical-range band
+           theme = "light"){
+    ink <- inks[[theme]]
     
     df <- df %>% 
       inner_join(series, by = "market") %>% 
@@ -166,15 +175,8 @@ line_plot <-
     tr <- if(log_y) log10 else identity
     span <- diff(range(tr(df$y), na.rm = TRUE))
     
-    pal <- setNames(series$colour, series$label)
-    if(bars){
-      p <- 
-        plot_ly(df, x = ~year, y = ~y, color = ~label, colors = pal,
-                type = "bar",
-                marker = list(line = list(width = 0), opacity = 0.9),
-                hovertemplate = paste0("%{y:", y_format, "}"))
-      ends <- ends[0, ]                     # single series: the title names it
-    } else {
+    pal <- series_colours(theme)
+    {
       p <- plot_ly()
       for(lab in rev(levels(droplevels(df$label)))){     # lead series drawn last, on top
         d <- df[df$label == lab, ]
@@ -189,7 +191,7 @@ line_plot <-
       p <- p %>% 
         add_trace(data = ends, x = ~year, y = ~y, type = "scatter", mode = "markers",
                   marker = list(color = unname(pal[as.character(ends$label)]), size = 7,
-                                line = list(color = "#fcfcfa", width = 2)),
+                                line = list(color = ink$page, width = 2)),
                   cliponaxis = FALSE, hoverinfo = "skip", showlegend = FALSE)
     }
     
@@ -212,8 +214,9 @@ line_plot <-
     
     # right-margin labels: series names at their end points, plus the band's
     # edges and median when a band is shown; spread together so none collide
-    lab <- data.frame(y = tr(ends$y), text = ends$short, x = ends$year, xref = "x",
-                      colour = ink$secondary, size = 12)
+    m <- nrow(ends)                       # 0 for single-series columns
+    lab <- data.frame(y = tr(ends$y), text = ends$short, x = ends$year, xref = rep("x", m),
+                      colour = rep(ink$secondary, m), size = rep(12, m))
     if(!is.null(band)) lab <- rbind(lab, data.frame(
       y = c(band$hi, band$med, band$lo), text = c("\u2191 Best 10%", "Median", "\u2193 Worst 10%"),
       x = 1, xref = "paper", colour = ink$muted, size = 11))
@@ -231,7 +234,7 @@ line_plot <-
         plot_bgcolor = "rgba(0,0,0,0)",
         showlegend = FALSE,                   # the stat cards above are the legend
         xaxis = c(list(title = "",
-                     range = if(bars) x_range + c(-0.6, 0.6) else x_range,
+                     range = x_range,
                      tickformat = "d",
                      tickangle = 0,
                      tickfont = tick_font,
@@ -248,7 +251,7 @@ line_plot <-
           if(!is.null(band)) list(
             list(type = "rect", xref = "paper", x0 = 0, x1 = 1, layer = "below",
                  y0 = band$lo, y1 = band$hi, line = list(width = 0),
-                 fillcolor = band$colour, opacity = 0.08),
+                 fillcolor = band$colour, opacity = ink$band),
             list(type = "line", xref = "paper", x0 = 0, x1 = 1, layer = "below",
                  y0 = band$med, y1 = band$med,
                  line = list(color = band$colour, width = 1), opacity = 0.45)),
@@ -260,12 +263,138 @@ line_plot <-
         bargap = 0.35,
         hovermode = "x unified",
         hoverdistance = -1,
-        hoverlabel = list(bgcolor = "#ffffff", bordercolor = "#d6d4cc",
+        hoverlabel = list(bgcolor = ink$hover_bg, bordercolor = ink$hover_border,
                           font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
                                       size = 12, color = ink$primary))) %>% 
       config(displayModeBar = FALSE)
   }
 
+
+#######################################################
+# stacked rows (small multiples): one row per series, shared timeline and
+# shared y scale. Annual: columns + the compound rate. Rolling: lines + each
+# series' own typical-range band and median.
+#######################################################
+stacked_plot <- function(df, y_col, x_range,
+                         type = c("bar", "line"),
+                         ref = NULL,          # named by label: list(y, text) reference line per row
+                         bands = NULL,        # named by label: list(lo, hi, med)
+                         y_format = ".1%", tick_format = ".0%",
+                         theme = "light"){
+  type <- match.arg(type)
+  ink <- inks[[theme]]; pal <- series_colours(theme)
+  df <- df %>% inner_join(series, by = "market")
+  df$y <- df[[y_col]]
+  df <- df %>% filter(!is.na(y))
+  labs <- series$label[series$label %in% df$label]
+  n <- length(labs)
+  
+  # one shared scale: data plus any bands, padded
+  y_all <- c(df$y, unlist(lapply(bands, function(b) c(b$lo, b$hi))), 0)
+  y_rng <- range(y_all, na.rm = TRUE); pad <- diff(y_rng) * 0.08
+  y_rng <- y_rng + c(-pad, pad)
+  tick_font <- list(size = 11.5, color = ink$muted)
+  
+  panels <- lapply(labs, function(l){
+    d <- df[df$label == l, ]
+    if(type == "bar"){
+      plot_ly(d, x = ~year, y = ~y, type = "bar", name = l,
+              marker = list(color = pal[[l]], line = list(width = 0)),
+              hovertemplate = paste0(l, ": %{y:", y_format, "}<extra></extra>"))
+    } else {
+      last <- d[which.max(d$year), ]
+      plot_ly(d, x = ~year, y = ~y, type = "scatter", mode = "lines", name = l,
+              line = list(color = pal[[l]], width = if(l == series$label[1]) 2.25 else 1.8),
+              hovertemplate = paste0(l, ": %{y:", y_format, "}<extra></extra>")) %>% 
+        add_trace(data = last, x = ~year, y = ~y, type = "scatter", mode = "markers",
+                  marker = list(color = pal[[l]], size = 7, line = list(color = ink$page, width = 2)),
+                  cliponaxis = FALSE, hoverinfo = "skip", inherit = FALSE)
+    }
+  })
+  p <- subplot(panels, nrows = n, shareX = TRUE, margin = 0.035)
+  
+  ax <- function(i) if(i == 1) "" else i
+  shapes <- list(); notes <- list()
+  for(i in seq_len(n)){
+    l <- labs[i]; yref <- paste0("y", ax(i))
+    hline <- function(y, colour, opacity = 1) list(
+      type = "line", xref = "paper", x0 = 0, x1 = 1, yref = yref, y0 = y, y1 = y,
+      line = list(color = colour, width = 1), opacity = opacity,
+      layer = if(type == "bar") "above" else "below")
+    if(!is.null(bands[[l]])){
+      b <- bands[[l]]
+      shapes <- c(shapes, list(
+        list(type = "rect", xref = "paper", x0 = 0, x1 = 1, yref = yref, y0 = b$lo, y1 = b$hi,
+             line = list(width = 0), fillcolor = pal[[l]], opacity = ink$band, layer = "below"),
+        hline(b$med, pal[[l]], 0.5)))
+      notes <- c(notes, list(list(
+        xref = "paper", x = 1, xanchor = "left", xshift = 10, yref = yref, y = b$med,
+        showarrow = FALSE, text = sprintf("median %s", sprintf("%.1f%%", 100 * b$med)),
+        font = list(size = 11, color = ink$muted))))
+    }
+    shapes <- c(shapes, list(hline(0, ink$zero)))
+    if(!is.null(ref[[l]])){
+      shapes <- c(shapes, list(hline(ref[[l]]$y, ink$primary, 0.55)))
+      notes <- c(notes, list(list(
+        xref = "paper", x = 1, xanchor = "left", xshift = 10, yref = yref, y = ref[[l]]$y,
+        showarrow = FALSE, text = ref[[l]]$text, font = list(size = 11, color = ink$muted))))
+    }
+    notes <- c(notes, list(list(
+      xref = "paper", x = 0, xanchor = "left", yref = paste0(yref, " domain"), y = 1,
+      yanchor = "bottom", showarrow = FALSE, align = "left",
+      text = sprintf("<span style='color:%s'>━</span>  %s", pal[[l]], l),
+      font = list(size = 12, color = ink$secondary))))
+  }
+  
+  y_axis <- list(range = y_rng, tickformat = tick_format, tickfont = tick_font,
+                 gridcolor = ink$grid, zeroline = FALSE, showline = FALSE,
+                 ticks = "", nticks = 4, automargin = FALSE, fixedrange = TRUE)
+  x_axis <- list(title = "", range = if(type == "bar") x_range + c(-0.6, 0.6) else x_range,
+                 tickformat = "d", tickangle = 0, tickfont = tick_font,
+                 showgrid = FALSE, zeroline = FALSE, showline = FALSE, ticks = "",
+                 showspikes = type == "line", spikemode = "across", spikesnap = "cursor",
+                 spikethickness = 1, spikecolor = ink$axis, spikedash = "solid",
+                 fixedrange = TRUE)
+  lay <- list(p,
+              font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+                          color = ink$primary),
+              paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+              showlegend = FALSE, bargap = 0.35, annotations = notes,
+              margin = list(t = 22, r = 84, b = 30, l = 52),
+              hovermode = "x",
+              hoverlabel = list(bgcolor = ink$hover_bg, bordercolor = ink$hover_border,
+                                font = list(size = 12, color = ink$primary)))
+  for(i in seq_len(n)){
+    lay[[paste0("yaxis", ax(i))]] <- y_axis
+    lay[[paste0("xaxis", ax(i))]] <- c(x_axis, if(i == n) list(
+      showline = TRUE, linecolor = ink$axis, ticks = "outside", ticklen = 4,
+      tickcolor = ink$axis), if(diff(x_range) <= 10) list(dtick = 1))
+  }
+  p <- plotly_build(do.call(layout, lay) %>% config(displayModeBar = FALSE))
+  # subplot() drops layout shapes added before the build, so set them after it
+  p$x$layout$shapes <- Filter(Negate(is.null), shapes)
+  p
+}
+
+# compound yearly rate over a range (years after the first), as on the cards
+compound_rate <- function(r) if(length(r)) exp(mean(log1p(r))) - 1 else NA
+
+# small icon switch for overlay / stacked (a shiny radio input)
+layout_switch <- function(id, selected){
+  icon_overlay <- HTML('<svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1 10 L6 5 L10 8 L17 2"/><path d="M1 12 L6 9 L11 11 L17 7"/></svg>')
+  icon_stacked <- HTML('<svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 2.5 H17"/><path d="M1 7 H17"/><path d="M1 11.5 H17"/></svg>')
+  opts <- list(list("overlay", "Overlay: all series on one chart", icon_overlay),
+               list("stacked", "Stacked: one row per series", icon_stacked))
+  tags$div(id = id, class = "shiny-input-radiogroup layout-switch", role = "radiogroup",
+           `aria-label` = "Chart layout",
+           lapply(opts, function(o){
+             bid <- paste0(id, "_", o[[1]])
+             tagList(tags$input(type = "radio", class = "btn-check", name = id, id = bid,
+                                value = o[[1]], autocomplete = "off",
+                                checked = if(o[[1]] == selected) NA),
+                     tags$label(`for` = bid, title = o[[2]], `aria-label` = o[[2]], o[[3]]))
+           }))
+}
 
 # $12.4M, $148k, $1,234
 fmt_dollars <- function(x){
@@ -393,8 +522,24 @@ sources <- list(
 app_css <- "
 :root {
   --ink: #111110; --ink-2: #4f4e4a; --ink-3: #8a8882;
-  --line: #e6e4de; --line-2: #d6d4cc; --page: #fcfcfa;
+  --line: #e6e4de; --line-2: #d6d4cc; --page: #fcfcfa; --raised: #ffffff;
 }
+/* dark: its own steps (warm near-black page, off-white ink), not an inversion */
+[data-bs-theme=dark] {
+  --ink: #ecebe7; --ink-2: #bdbcb5; --ink-3: #86847e;
+  --line: #262624; --line-2: #3a3a37; --page: #141413; --raised: #1d1d1c;
+  --bs-body-bg: var(--page); --bs-body-color: var(--ink); --bs-border-color: var(--line-2);
+  --bs-secondary-bg: var(--raised); --bs-tertiary-bg: var(--raised);
+  color-scheme: dark;
+}
+[data-bs-theme=dark] .modal-content { background: var(--raised); }
+[data-bs-theme=dark] .form-select { background-color: var(--raised); color: var(--ink); border-color: var(--line-2); }
+.series-card { --c: var(--cl); }
+[data-bs-theme=dark] .series-card { --c: var(--cd); }
+
+/* light/dark toggle */
+.header-actions { display: flex; align-items: center; gap: 16px; }
+bslib-input-dark-mode { --text-1: var(--ink-3); --text-2: var(--ink); --vertical-correction: 0; display: inline-flex; font-size: 1.05rem; }
 html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 .app { max-width: 1040px; margin: 0 auto; padding: 56px 28px 64px; }
 
@@ -422,6 +567,12 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .form-switch .form-check-input { cursor: pointer; }
 .form-switch .form-check-input:focus { box-shadow: none; }
 
+.layout-switch { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.layout-switch label { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 26px; margin: 0; cursor: pointer; color: var(--ink-3); }
+.layout-switch label + input + label { border-left: 1px solid var(--line-2); }
+.layout-switch label:hover { color: var(--ink); }
+.layout-switch .btn-check:checked + label { color: var(--ink); background: var(--line); }
+.layout-switch .btn-check:focus-visible + label { outline: 2px solid var(--ink-3); outline-offset: -2px; }
 .chart-title { margin: 28px 0 0; }
 .chart-title h2 { font-size: 1.15rem; font-weight: 600; margin: 0; letter-spacing: -0.012em; }
 .chart-title p { color: var(--ink-3); font-size: .88rem; margin: 4px 0 0; }
@@ -450,8 +601,8 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .irs--shiny { height: 42px; }
 .irs--shiny .irs-line { height: 1px; top: 26px; background: var(--line-2); border: 0; border-radius: 0; }
 .irs--shiny .irs-bar { height: 2px; top: 25.5px; background: var(--ink-2); border: 0; }
-.irs--shiny .irs-handle { width: 14px; height: 14px; top: 19px; background: #fff; border: 1.5px solid var(--ink-2); box-shadow: none; cursor: grab; }
-.irs--shiny .irs-handle:hover, .irs--shiny .irs-handle.state_hover { background: #fff; border-color: var(--ink); }
+.irs--shiny .irs-handle { width: 14px; height: 14px; top: 19px; background: var(--page); border: 1.5px solid var(--ink-2); box-shadow: none; cursor: grab; }
+.irs--shiny .irs-handle:hover, .irs--shiny .irs-handle.state_hover { background: var(--page); border-color: var(--ink); }
 .irs--shiny .irs-handle > i:first-child { display: none; }
 .irs--shiny .irs-from, .irs--shiny .irs-to, .irs--shiny .irs-single { background: transparent; color: var(--ink-2); font-size: .8rem; font-weight: 500; top: -1px; padding: 0 2px; font-variant-numeric: tabular-nums; }
 .irs--shiny .irs-from:before, .irs--shiny .irs-to:before, .irs--shiny .irs-single:before { display: none; }
@@ -507,6 +658,7 @@ details.how li::marker { color: var(--ink-3); }
   .series-card .ctx { font-size: .7rem; }
   .series-card .flag { margin: 2px 0 0; }
   .years { padding: 0 8px; }
+  #chart { height: 640px !important; }   /* room for stacked rows on phones */
 }
 "
 
@@ -540,7 +692,7 @@ series_toggles <- function(id){
         tags$input(type = "checkbox", class = "btn-check", name = id, id = bid,
                    value = series$key[i], autocomplete = "off", checked = NA),
         tags$label(class = "series-card", `for` = bid,
-                   style = paste0("--c:", series$colour[i]),
+                   style = paste0("--cl:", series$colour[i], ";--cd:", series$colour_dark[i]),
                    title = "Click to show or hide",
                    div(class = "name", span(class = "dot"),
                        span(class = "lbl-full", series$label[i]),
@@ -570,7 +722,9 @@ ui <- page(
       div(class = "app-header",
           div(tags$h1("Australian Stock Market"),
               tags$p(paste0("Shares, dividends and government bonds, ", min_yr, "–", max_yr, "."))),
-          actionLink("about", "About the data", class = "about-link")),
+          div(class = "header-actions",
+              actionLink("about", "About the data", class = "about-link"),
+              input_dark_mode(id = "mode"))),
       
       div(class = "chart-panel",
           div(class = "chart-bar",
@@ -583,7 +737,10 @@ ui <- page(
                   conditionalPanel("input.view == 'rolling'", class = "window",
                                    selectInput("window", "Window",
                                                choices = setNames(3:21, paste(3:21, "years")),
-                                               selected = 10, width = "auto", selectize = FALSE))),
+                                               selected = 10, width = "auto", selectize = FALSE)),
+                  # each tab keeps its own layout choice
+                  conditionalPanel("input.view == 'annual'", layout_switch("layout_annual", "stacked")),
+                  conditionalPanel("input.view == 'rolling'", layout_switch("layout_rolling", "overlay"))),
               input_switch("real", "Adjust for inflation", value = FALSE)),
           
           uiOutput("chart_title"),
@@ -619,6 +776,11 @@ ui <- page(
 server <- function(input, output, session) {
 
   real <- reactive(isTRUE(input$real))
+  stacked <- reactive(switch(input$view,
+                             annual  = !identical(input$layout_annual, "overlay"),
+                             rolling = identical(input$layout_rolling, "stacked"),
+                             FALSE))
+  theme <- reactive(if(identical(input$mode, "dark")) "dark" else "light")
 
   # index rebased to $100 at the first selected year (unrounded)
   index_df <- reactive({
@@ -721,7 +883,7 @@ server <- function(input, output, session) {
       tags$li(sprintf("Each point is the average yearly return from holding for %d years, ending that year. The point at %d is what you would have earned per year from the end of %d to the end of %d.",
                       k, y1, y1 - k, y1)),
       tags$li("Neighbouring points share most of their years, so the line moves in smooth waves. These are not reliable cycles: the same returns shuffled into random order produce similar waves."),
-      tags$li(sprintf("Show a single series to see its typical range. The shaded band holds the middle 80%% of all %d-year periods since %d: above it are the best 10%%, below it the worst 10%%, and the line inside is the median.",
+      tags$li(sprintf("Switch to stacked rows, or show a single series, to see the typical range. The shaded band holds the middle 80%% of all %d-year periods since %d: above it are the best 10%%, below it the worst 10%%, and the line inside is the median.",
                       k, first)),
       tags$li("The cards rank the period ending at the slider's end year against the full history. \u201cHistoric low\u201d and \u201chistoric high\u201d describe the past; they are not forecasts."),
       tags$li("Bonds use each December's 10-year yield as that year's return, so gains or losses from changing interest rates are not included.")
@@ -738,17 +900,21 @@ server <- function(input, output, session) {
                         tags$p("Log scale: each gridline is ten times the one below, so equal slopes mean equal growth rates.")),
            annual = div(class = "chart-title",
                         tags$h2(paste0("Calendar-year returns", real_txt)),
-                        tags$p("Return in each year. Bonds show the 10-year yield at December.")),
+                        tags$p(if(stacked()) "Return in each year, one row per series on a shared scale. The line in each row is the steady yearly rate that gives the same result over the period."
+                               else "Return in each year.")),
            rolling = div(class = "chart-title",
                          tags$h2(paste0("Rolling ", input$window, "-year returns", real_txt)),
                          tags$p(paste0("Average yearly return over the ", input$window,
                                        " years ending in each year. ",
-                                       if(length(shown()) > 1) "Show a single series to see its typical range."
+                                       if(stacked() && length(shown()) > 1) sprintf("Each row shades where 80%% of that series' %s-year periods since %s landed.",
+                                                             input$window, min(sapply(rolling_ctx(), `[[`, "first")))
+                                       else if(length(shown()) > 1) "Show a single series, or switch to stacked rows, to see the typical range."
                                        else sprintf("The shaded band is where 80%% of all %s-year periods since %s landed.",
                                                     input$window, min(sapply(rolling_ctx(), `[[`, "first")))))))
   })
   
   output$chart <- renderPlotly({
+    req(input$mode)                        # wait for the browser's light/dark mode
     yrs <- input$years
     keep <- series$market[series$key %in% shown()]
     switch(input$view,
@@ -761,20 +927,37 @@ server <- function(input, output, session) {
                        tick_format = "$~s",
                        log_y = TRUE,
                        y_range = c(min(c(df$dollars, 100), na.rm = TRUE),
-                                   max(df$dollars, na.rm = TRUE)))
+                                   max(df$dollars, na.rm = TRUE)),
+                       theme = theme())
            },
-           annual = line_plot(returns_df() %>% filter(market %in% keep),
-                              y_col = "percent_yoy",
-                              x_range = yrs,
-                              y_format = ".1%",
-                              tick_format = ".0%",
-                              hline = 0,
-                              bars = length(keep) == 1),   # one series reads better as columns
+           annual = {
+             df <- returns_df() %>% filter(market %in% keep)
+             if(stacked()){
+               ref <- lapply(setNames(series$label, series$label), function(l){
+                 r <- compound_rate(df$percent_yoy[df$market == series$market[series$label == l] &
+                                                    df$year > yrs[1]])
+                 if(is.na(r)) NULL else list(y = r, text = sprintf("%.1f%% a year", 100 * r))
+               })
+               stacked_plot(df, "percent_yoy", yrs, type = "bar", ref = ref, theme = theme())
+             } else {
+               line_plot(df, y_col = "percent_yoy", x_range = yrs,
+                         y_format = ".1%", tick_format = ".0%", hline = 0, theme = theme())
+             }
+           },
            rolling = {
+             # one series has nothing to stack: use the fully labelled single chart
+             if(stacked() && length(keep) > 1){
+               bands <- lapply(setNames(seq_len(nrow(series)), series$label), function(i){
+                 c <- rolling_ctx()[[series$key[i]]]; list(lo = c$lo, hi = c$hi, med = c$med)
+               })
+               stacked_plot(rolling_df() %>% filter(market %in% keep), "percent", yrs,
+                            type = "line", bands = bands, theme = theme())
+             } else {
              band <- NULL
              if(length(keep) == 1){
                i <- match(keep, series$market); c <- rolling_ctx()[[series$key[i]]]
-               band <- list(lo = c$lo, hi = c$hi, med = c$med, colour = series$colour[i])
+               band <- list(lo = c$lo, hi = c$hi, med = c$med,
+                            colour = series_colours(theme())[[series$label[i]]])
              }
              line_plot(rolling_df() %>% filter(market %in% keep),
                        y_col = "percent",
@@ -782,9 +965,11 @@ server <- function(input, output, session) {
                        y_format = ".1%",
                        tick_format = ".0%",
                        hline = 0,
-                       band = band)
+                       band = band,
+                       theme = theme())
+             }
            })
-  }) %>% bindCache(input$view, real(), input$years, shown(),
+  }) %>% bindCache(input$view, real(), input$years, shown(), theme(), stacked(),
                    if(identical(input$view, "rolling")) input$window)
   
   #### download: the data behind the current chart ####
