@@ -146,6 +146,63 @@
 
 <hr>
 
+<h3 id="dividend-method">Dividend calculator: method</h3>
+<p>
+  The calculator follows an amount put into shares at the end of the first selected year, valued at the end of each later year
+  in two ways. The data hold two yearly returns for each market: the <strong>total return</strong>, which includes dividends,
+  and the <strong>price return</strong>, which leaves them out. The calculator builds everything from these two.
+</p>
+<ol>
+  <li>
+    <strong>Dividends reinvested</strong> follows the total return: amount × (1 + total return) for each year. Every dividend buys
+    more shares, which then rise and pay dividends of their own. This is the same series as on the Growth tab.
+  </li>
+  <li>
+    <strong>Dividends taken as cash</strong> keeps the same shares and adds up the dividends they paid:
+    <ul>
+      <li>the shares' value follows the price return: amount × (1 + price return) for each year;</li>
+      <li>each year's dividend is the gap between the two returns, applied to the shares' value at the start of that year:
+        <em>dividend = value at start of year × (total return − price return)</em>;</li>
+      <li>the dividends are added up as cash that earns no interest.</li>
+    </ul>
+    The line is the shares' value plus all dividends paid so far.
+  </li>
+  <li>
+    <strong>Extra from reinvesting</strong> is the difference between the two. It is what the reinvested dividends earned on
+    top of themselves: the compounding.
+  </li>
+</ol>
+<h5>Worked example: $1,000 in US shares at the end of 2023</h5>
+<table class="method-table">
+  <thead><tr><th>Year</th><th>Shares worth</th><th>Dividend that year</th><th>Dividends so far</th><th>Taken as cash</th><th>Reinvested</th></tr></thead>
+  <tbody>
+    <tr><td>2023</td><td>$1,000</td><td>–</td><td>$0</td><td>$1,000</td><td>$1,000</td></tr>
+    <tr><td>2024</td><td>$1,233</td><td>$1,000 × (24.9% − 23.3%) = $15.69</td><td>$15.69</td><td>$1,249</td><td>$1,249</td></tr>
+    <tr><td>2025</td><td>$1,435</td><td>$1,233 × 1.34% = $16.47</td><td>$32.16</td><td>$1,467</td><td>$1,470</td></tr>
+  </tbody>
+</table>
+<p>
+  After one year the two are equal. From the second year the reinvested dividends earn returns of their own, so the gap
+  opens. It is small over two years, and over decades it becomes most of the final value.
+</p>
+<p>
+  <strong>Adjusted for inflation:</strong> the shares' value and each year's dividend are converted to first-year dollars
+  using prices at the end of that year, so every figure shows buying power.
+</p>
+<p>
+  <strong>Limits:</strong>
+</p>
+<ul>
+  <li>Dividends are estimated from the gap between the two returns, not taken from records of actual payments.</li>
+  <li>The Australian share returns from 2006 are based on December averages, so single years' dividends are approximate.
+    Totals over many years are reliable.</li>
+  <li>Dividends taken as cash are assumed to earn nothing. Cash kept in a bank account would have earned some interest,
+    which would narrow the gap somewhat.</li>
+  <li>Tax, fees and franking credits are not included.</li>
+</ul>
+
+<hr>
+
 <h4>Downloads &amp; Code</h4>
 <ul>
   <li>

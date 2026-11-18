@@ -1,7 +1,6 @@
 library(shiny)
 library(dplyr)
 library(tidyr)
-library(plotly)
 library(bslib)
 
 options(warn=-1)
@@ -18,97 +17,6 @@ app_theme <- bs_theme(
   "link-color" = "#52514e"
 )
 
-####################################
-#convert data to tidy format (pivot longer)
-####################################
-convert_to_tidy <- 
-  function(df, nam_to_name = 'market', val_to_name){
-    
-    columns <- 
-      df %>% 
-      select(-year) %>% 
-      colnames()
-    
-    df <- df %>% 
-      pivot_longer(cols = columns,
-                   names_to = nam_to_name,
-                   values_to = val_to_name) %>% 
-      mutate_if(is.character,as.factor) %>%
-      #mutate(year = ymd(year, truncated = 2L))
-      
-      return(df)
-  }
-
-####################################
-#function for creating new index column
-####################################
-calc_index <- 
-  function(col_1, col_2, lag){
-    
-    out <- 
-      lag({{col_1}}[lag] * cumprod(lead({{col_2}} + lag)))
-    
-    return(out)
-  }
-
-####################################
-#function for creating new real return column
-####################################
-calc_real_return <- 
-  function(col_1, col_2){
-    
-    out <- 
-      (((1+{{col_1}})/(1+{{col_2}}))-1)
-    
-    return(out)
-  }
-
-####################################
-#function for creating new rolling returns column
-####################################
-create_rr_col <- 
-  function(df, group_by_col, calc_col, roll_years) {
-    
-    name_to_pass <- 
-      paste0(roll_years)
-    
-    out <- 
-      df %>%
-      group_by({{group_by_col}}) %>%
-      mutate(!!name_to_pass := ({{calc_col}} / 
-                                  lag({{calc_col}},roll_years)) ^ 
-               (1/roll_years) -1 )
-    
-    return(out)
-  }
-
-####################################
-#function for creating rolling returns dataframe
-####################################
-create_rr_df <- function(df, filter = F, no_years = NULL){
-  
-  out <- 
-    df %>% 
-    create_rr_col(.,market,dollars,no_years) %>%
-    # create_rr_col(.,market,dollars,5) %>%
-    # create_rr_col(.,market,dollars,8) %>%
-    # create_rr_col(.,market,dollars,13) %>%
-    # create_rr_col(.,market,dollars,21) %>% 
-    pivot_longer(cols = !c(year,market,dollars), 
-                 names_to = 'roll_years', 
-                 values_to = 'percent') %>% 
-    mutate_if(is.character,as.factor) %>% 
-    select(-dollars)
-  
-  
-  if(filter == T){
-    out <- 
-      out %>%  
-      filter(roll_years == no_years)
-  }
-  return(out)
-  
-}
 
 series <- tibble::tribble(
   ~key,    ~market,             ~label,                 ~short,          ~colour,   ~colour_dark,
@@ -145,7 +53,43 @@ spread_labels <- function(y, min_gap){
 }
 
 #######################################################
-# line chart, native plotly (ggplotly was ~6x slower per render)
+# Charts are plotly.js figures built as plain lists (data, layout, config)
+# and drawn in the browser by Plotly.react, which updates the chart in
+# place. No plotly R package: its build and serialisation step was most of
+# the time per click.
+#######################################################
+fig_config <- list(displayModeBar = FALSE, responsive = TRUE)
+
+# add a trace; x and y always stay arrays in the JSON (I()), without
+# missing points (e.g. before a rolling window fills), rounded to 7
+# significant digits to keep the payload small
+fig_trace <- function(fig, x, y, ...){
+  num <- function(v) if(is.numeric(v)) signif(v, 7) else v
+  ok <- !is.na(x) & !is.na(y)
+  fig$data[[length(fig$data) + 1]] <- c(list(x = I(num(x[ok])), y = I(num(y[ok]))), list(...))
+  fig
+}
+fig_layout <- function(fig, ...){
+  fig$layout <- list(...); fig$config <- fig_config
+  fig
+}
+# plotly.js treats {} as a value, so drop NULL entries (e.g. options
+# switched off with if()) before sending
+drop_nulls <- function(x){
+  if(!is.list(x) || inherits(x, "AsIs")) return(x)
+  lapply(x[!vapply(x, is.null, logical(1))], drop_nulls)
+}
+
+figureOutput <- function(outputId, height = "400px"){
+  div(id = outputId, class = "figure-output", style = paste0("width: 100%; height: ", height, ";"))
+}
+renderFigure <- function(expr){
+  func <- shiny::quoToFunction(rlang::enquo0(expr), "renderFigure")
+  shiny::createRenderFunction(func, function(value, session, name, ...) drop_nulls(value), figureOutput)
+}
+
+#######################################################
+# line chart
 #######################################################
 line_plot <- 
   function(df,
@@ -180,19 +124,19 @@ line_plot <-
     
     pal <- series_colours(theme)
     {
-      p <- plot_ly()
+      p <- list(data = list())
       for(lab in rev(levels(droplevels(df$label)))){     # lead series drawn last, on top
         d <- df[df$label == lab, ]
         lead <- lab == series$label[1]
         p <- p %>% 
-          add_trace(data = d, x = ~year, y = ~y, name = lab,
+          fig_trace(d$year, d$y, name = lab,
                     type = "scatter", mode = "lines",
                     line = list(color = pal[[lab]], width = if(lead) 2.25 else 1.6,
                                 shape = "linear"),
                     hovertemplate = paste0("%{y:", y_format, "}"))
       }
       p <- p %>% 
-        add_trace(data = ends, x = ~year, y = ~y, type = "scatter", mode = "markers",
+        fig_trace(ends$year, ends$y, type = "scatter", mode = "markers",
                   marker = list(color = unname(pal[as.character(ends$label)]), size = 7,
                                 line = list(color = ink$page, width = 2)),
                   cliponaxis = FALSE, hoverinfo = "skip", showlegend = FALSE)
@@ -245,13 +189,14 @@ line_plot <-
     }
     
     p %>% 
-      layout(
+      fig_layout(
         font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
                     color = ink$primary),
         paper_bgcolor = "rgba(0,0,0,0)",
         plot_bgcolor = "rgba(0,0,0,0)",
         showlegend = FALSE,                   # the stat cards above are the legend
         xaxis = c(list(title = "",
+                     automargin = TRUE,
                      range = x_range,
                      tickformat = "d",
                      tickangle = 0,
@@ -289,8 +234,7 @@ line_plot <-
         hoverdistance = -1,
         hoverlabel = list(bgcolor = ink$hover_bg, bordercolor = ink$hover_border,
                           font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
-                                      size = 12, color = ink$primary))) %>% 
-      config(displayModeBar = FALSE)
+                                      size = 12, color = ink$primary)))
   }
 
 
@@ -320,27 +264,31 @@ stacked_plot <- function(df, y_col, x_range,
   y_rng <- y_rng + c(-pad, pad)
   tick_font <- list(size = 11.5, color = ink$muted)
   
-  panels <- lapply(labs, function(l){
-    d <- df[df$label == l, ]
+  # one figure, one shared x axis and one y axis per row (top row = y).
+  # (plotly R's subplot() built every row as its own chart first.)
+  ax <- function(i) if(i == 1) "" else i
+  p <- list(data = list())
+  for(i in seq_len(n)){
+    l <- labs[i]; d <- df[df$label == l, ]; yax <- paste0("y", ax(i))
     if(type == "bar"){
-      plot_ly(d, x = ~year, y = ~y, type = "bar", name = l,
-              marker = list(color = pal[[l]], line = list(width = 0)),
-              hovertemplate = paste0(l, ": %{y:", y_format, "}<extra></extra>"))
+      p <- p %>% fig_trace(d$year, d$y, type = "bar", name = l, yaxis = yax,
+                           marker = list(color = pal[[l]], line = list(width = 0)),
+                           hovertemplate = paste0(l, ": %{y:", y_format, "}<extra></extra>"))
     } else {
       last <- d[which.max(d$year), ]
-      plot_ly(d, x = ~year, y = ~y, type = "scatter", mode = "lines", name = l,
-              fill = if(type == "area") "tozeroy" else "none",
-              fillcolor = if(type == "area") fade(pal[[l]], if(theme == "dark") 0.28 else 0.18),
-              line = list(color = pal[[l]], width = if(l == series$label[1]) 2.25 else 1.8),
-              hovertemplate = paste0(l, ": %{y:", y_format, "}<extra></extra>")) %>% 
-        add_trace(data = last, x = ~year, y = ~y, type = "scatter", mode = "markers",
+      p <- p %>%
+        fig_trace(d$year, d$y, type = "scatter", mode = "lines", name = l, yaxis = yax,
+                  fill = if(type == "area") "tozeroy" else "none",
+                  fillcolor = if(type == "area") fade(pal[[l]], if(theme == "dark") 0.28 else 0.18),
+                  line = list(color = pal[[l]], width = if(l == series$label[1]) 2.25 else 1.8),
+                  hovertemplate = paste0(l, ": %{y:", y_format, "}<extra></extra>")) %>%
+        fig_trace(last$year, last$y, type = "scatter", mode = "markers", yaxis = yax,
                   marker = list(color = pal[[l]], size = 7, line = list(color = ink$page, width = 2)),
-                  cliponaxis = FALSE, hoverinfo = "skip", inherit = FALSE)
+                  cliponaxis = FALSE, hoverinfo = "skip")
     }
-  })
-  p <- subplot(panels, nrows = n, shareX = TRUE, margin = 0.035)
-  
-  ax <- function(i) if(i == 1) "" else i
+  }
+  gap <- 0.07                                   # between rows, room for each row's name
+  h <- (1 - gap * (n - 1)) / n
   shapes <- list(); notes <- list()
   for(i in seq_len(n)){
     l <- labs[i]; yref <- paste0("y", ax(i))
@@ -376,16 +324,19 @@ stacked_plot <- function(df, y_col, x_range,
       font = list(size = 12, color = ink$secondary))))
   }
   
-  y_axis <- list(range = y_rng, tickformat = tick_format, tickfont = tick_font,
+  y_axis <- list(title = "", range = y_rng, tickformat = tick_format, tickfont = tick_font,
                  gridcolor = ink$grid, zeroline = FALSE, showline = FALSE,
                  ticks = "", nticks = 4, automargin = FALSE, fixedrange = TRUE)
-  x_axis <- list(title = "", range = if(type == "bar") x_range + c(-0.6, 0.6) else x_range,
+  x_axis <- list(title = "", automargin = TRUE, range = if(type == "bar") x_range + c(-0.6, 0.6) else x_range,
                  tickformat = "d", tickangle = 0, tickfont = tick_font,
                  showgrid = FALSE, zeroline = FALSE, showline = FALSE, ticks = "",
                  showspikes = type != "bar", spikemode = "across", spikesnap = "cursor",
                  spikethickness = 1, spikecolor = ink$axis, spikedash = "solid",
                  fixedrange = TRUE)
   lay <- list(p,
+              xaxis = c(x_axis, list(anchor = paste0("y", ax(n))),
+                        if(diff(x_range) <= 10) list(dtick = 1)),
+              shapes = Filter(Negate(is.null), shapes),
               font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
                           color = ink$primary),
               paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
@@ -395,19 +346,52 @@ stacked_plot <- function(df, y_col, x_range,
               hoverlabel = list(bgcolor = ink$hover_bg, bordercolor = ink$hover_border,
                                 font = list(size = 12, color = ink$primary)))
   for(i in seq_len(n)){
-    lay[[paste0("yaxis", ax(i))]] <- y_axis
-    lay[[paste0("xaxis", ax(i))]] <- c(x_axis, if(i == n) list(
-      showline = TRUE, linecolor = ink$axis, ticks = "outside", ticklen = 4,
-      tickcolor = ink$axis), if(diff(x_range) <= 10) list(dtick = 1))
+    top <- 1 - (i - 1) * (h + gap)
+    lay[[paste0("yaxis", ax(i))]] <- c(y_axis, list(domain = c(top - h, top), anchor = "x"))
   }
-  p <- plotly_build(do.call(layout, lay) %>% config(displayModeBar = FALSE))
-  # subplot() drops layout shapes added before the build, so set them after it
-  p$x$layout$shapes <- Filter(Negate(is.null), shapes)
-  p
+  do.call(fig_layout, lay)
 }
 
 # compound yearly rate over a range (years after the first), as on the cards
 compound_rate <- function(r) if(length(r)) exp(mean(log1p(r))) - 1 else NA
+
+# small flags for the market switch, drawn as inline SVG (flag emoji show as
+# plain letters on Windows)
+star_points <- function(cx, cy, r_out, r_in, n){
+  a <- -pi / 2 + seq(0, by = pi / n, length.out = 2 * n)
+  r <- rep(c(r_out, r_in), n)
+  paste(sprintf("%.2f,%.2f", cx + r * cos(a), cy + r * sin(a)), collapse = " ")
+}
+flag_svg <- list(
+  # Australia, 2:1: Union Jack, Commonwealth Star, Southern Cross
+  au = paste0(
+    '<svg class="cflag" viewBox="0 0 120 60" width="22" height="11" aria-hidden="true">',
+    '<defs><clipPath id="cflag-au-c"><rect width="60" height="30"/></clipPath>',
+    '<clipPath id="cflag-au-t"><path d="M30,15 h30 v15 z v15 h-30 z h-30 v-15 z v-15 h30 z"/></clipPath></defs>',
+    '<rect width="120" height="60" fill="#012169"/>',
+    '<g clip-path="url(#cflag-au-c)">',
+    '<path d="M0,0 L60,30 M60,0 L0,30" stroke="#fff" stroke-width="6"/>',
+    '<path d="M0,0 L60,30 M60,0 L0,30" clip-path="url(#cflag-au-t)" stroke="#C8102E" stroke-width="4"/>',
+    '<path d="M30,0 v30 M0,15 h60" stroke="#fff" stroke-width="10"/>',
+    '<path d="M30,0 v30 M0,15 h60" stroke="#C8102E" stroke-width="6"/></g>',
+    '<g fill="#fff">',
+    '<polygon points="', star_points(30, 45, 9, 4.2, 7), '"/>',
+    '<polygon points="', star_points(90, 50, 4.6, 2.1, 7), '"/>',
+    '<polygon points="', star_points(90, 10, 4.6, 2.1, 7), '"/>',
+    '<polygon points="', star_points(76, 24, 4.6, 2.1, 7), '"/>',
+    '<polygon points="', star_points(103, 21, 4.6, 2.1, 7), '"/>',
+    '<polygon points="', star_points(97, 32, 2.6, 1.2, 5), '"/></g></svg>'),
+  # United States, 19:10: 13 stripes and a canton (stars as dots at this size)
+  us = paste0(
+    '<svg class="cflag" viewBox="0 0 190 100" width="21" height="11" aria-hidden="true">',
+    '<rect width="190" height="100" fill="#fff"/>',
+    paste0(sprintf('<rect y="%.3f" width="190" height="%.3f" fill="#B22234"/>',
+                   (seq(0, 12, by = 2)) * 100 / 13, 100 / 13), collapse = ""),
+    '<rect width="76" height="53.85" fill="#3C3B6E"/>',
+    '<g fill="#fff">',
+    paste0(apply(expand.grid(x = seq(7, 69, length.out = 6), y = seq(6, 48, length.out = 5)), 1,
+                 function(p) sprintf('<circle cx="%.1f" cy="%.1f" r="2.8"/>', p[1], p[2])), collapse = ""),
+    '</g></svg>'))
 
 # Australia / United States (a shiny radio input); the page title follows it
 country_switch <- function(id){
@@ -417,7 +401,7 @@ country_switch <- function(id){
              bid <- paste0(id, "_", k)
              tagList(tags$input(type = "radio", class = "btn-check", name = id, id = bid, value = k,
                                 autocomplete = "off", checked = if(k == "au") NA),
-                     tags$label(`for` = bid, countries[[k]]))
+                     tags$label(`for` = bid, HTML(flag_svg[[k]]), countries[[k]]))
            }),
            tags$script(HTML(sprintf("$(document).on('change', '#%s input', function(){ document.getElementById('app-title').textContent = this.value === 'us' ? 'US Stock Market' : 'Australian Stock Market'; });", id))))
 }
@@ -475,6 +459,9 @@ events <- tibble::tribble(
   "us",     2008,  "GFC",              "GFC",
   "us",     2020,  "COVID",            "COVID")
 
+# exact amount someone typed: $10,000, $2,500.50
+fmt_amount <- function(x) paste0("$", formatC(x, format = "f", digits = if(x %% 1 == 0) 0 else 2, big.mark = ","))
+
 # $12.4M, $148k, $1,234
 fmt_dollars <- function(x){
   if(is.na(x)) return("–")
@@ -484,90 +471,139 @@ fmt_dollars <- function(x){
   paste0("$", formatC(round(x), format = "d", big.mark = ","))
 }
 
+#######################################################
+# dividend calculator
+#######################################################
+# `amount` put into shares at the end of y0, followed to the end of each later
+# year two ways:
+#   reinvested: every dividend buys more shares (the total-return series)
+#   shares:     the same shares with dividends paid out (the price series)
+#   cash:       the dividends paid out, added up (not invested, no interest)
+# A year's dividend is the gap between the two returns applied to the value
+# of the shares at the start of that year. With `real`, every amount is in
+# y0 dollars: each dividend is deflated by prices at the end of its year.
+dividend_path <- function(raw, y0, y1, amount, real = FALSE){
+  d <- raw[raw$year > y0 & raw$year <= y1, ]; d <- d[order(d$year), ]
+  defl <- if(real) cumprod(1 + d$inflation) else rep(1, nrow(d))
+  price <- amount * cumprod(1 + d$stock_price)                 # before inflation
+  paid  <- c(amount, head(price, -1)) * (d$stock_accumulation - d$stock_price)
+  data.frame(year       = c(y0, d$year),
+             reinvested = c(amount, amount * cumprod(1 + d$stock_accumulation) / defl),
+             shares     = c(amount, price / defl),
+             cash       = c(0, cumsum(paid / defl)))
+}
+
+# the calculator's chart: shares alone, plus the dividends paid out (shaded),
+# plus what reinvesting them added on top (shaded)
+dividend_plot <- function(path, x_range, narrow = FALSE, theme = "light"){
+  ink <- inks[[theme]]; pal <- series_colours(theme)
+  c_div <- pal[["Shares + dividends"]]; c_px <- pal[["Shares (price only)"]]
+  a <- if(theme == "dark") 0.26 else 0.16
+  taken <- path$shares + path$cash
+  tick_font <- list(size = 11.5, color = ink$muted)
+  hov <- function(lab) paste0(lab, ": %{y:$,.0f}<extra></extra>")
+  p <- list(data = list()) %>%
+    fig_trace(path$year, path$shares, type = "scatter", mode = "lines", name = "Shares alone",
+              line = list(color = c_px, width = 1.4), hovertemplate = hov("Shares alone")) %>%
+    fig_trace(path$year, taken, type = "scatter", mode = "lines", name = "Dividends taken as cash",
+              fill = "tonexty", fillcolor = fade(c_px, a),
+              line = list(color = c_px, width = 1.8, dash = "dash"),
+              hovertemplate = hov("Shares + dividends taken as cash")) %>%
+    fig_trace(path$year, path$reinvested, type = "scatter", mode = "lines", name = "Dividends reinvested",
+              fill = "tonexty", fillcolor = fade(c_div, a),
+              line = list(color = c_div, width = 2.25), hovertemplate = hov("Dividends reinvested"))
+  n <- nrow(path); top <- max(path$reinvested)
+  # the axis starts at the amount invested (marked by a line), or lower if
+  # the value ever fell below it, so the chart's height shows what changed
+  base <- path$reinvested[1]; low <- min(path$shares, base)
+  span <- max(top - low, base * 0.01)
+  p <- p %>% fig_trace(rep(path$year[n], 3), c(path$shares[n], taken[n], path$reinvested[n]),
+                       type = "scatter", mode = "markers", hoverinfo = "skip",
+                       marker = list(color = c(c_px, c_px, c_div), size = 7,
+                                     line = list(color = ink$page, width = 2)), cliponaxis = FALSE)
+  # names at the right, spread apart
+  ys <- spread_labels(c(path$shares[n], taken[n], path$reinvested[n]), span * 0.06)
+  labels <- lapply(1:3, function(i) list(
+    x = path$year[n], xref = "x", y = ys[i], xanchor = "left", xshift = 10, showarrow = FALSE,
+    text = c("Shares", "Cash taken", "Reinvested")[i], font = list(size = 12, color = ink$secondary)))
+  # name each shaded area inside it, where it is tall enough to hold the words
+  # (centred where the band stays widest across the width of the words,
+  # about an eighth of the years, between 45% and 85% of the way along)
+  area_note <- function(lo, hi, text){
+    w <- max(1, ceiling(n * 0.07))
+    cand <- seq(max(1 + w, ceiling(n * 0.45)), min(n - w, floor(n * 0.85)))
+    if(n < 8 || !length(cand) || cand[1] > cand[length(cand)]) return(NULL)
+    room <- sapply(cand, function(j){ i <- (j - w):(j + w); min(hi[i]) - max(lo[i]) })
+    k <- cand[which.max(room)]
+    mid <- (max(lo[(k - w):(k + w)]) + min(hi[(k - w):(k + w)])) / 2
+    if(max(room) > span * 0.045) list(list(
+    x = path$year[k], xref = "x", y = mid, xanchor = "center", showarrow = FALSE,
+    text = text, font = list(size = 11.5, color = ink$secondary)))
+  }
+  notes <- if(!narrow) c(area_note(taken, path$reinvested, "Extra from reinvesting"),
+             area_note(path$shares, taken, "Dividends paid out"))
+  p %>% fig_layout(
+    font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", color = ink$primary),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)", showlegend = FALSE,
+    xaxis = c(list(title = "", automargin = TRUE, range = x_range, tickformat = "d", tickangle = 0,
+                   tickfont = tick_font, showgrid = FALSE, zeroline = FALSE,
+                   showline = TRUE, linecolor = ink$axis, linewidth = 1,
+                   ticks = "outside", ticklen = 4, tickcolor = ink$axis, tickwidth = 1,
+                   showspikes = TRUE, spikemode = "across", spikesnap = "cursor",
+                   spikethickness = 1, spikecolor = ink$axis, spikedash = "solid", fixedrange = TRUE),
+              if(diff(x_range) <= 10) list(dtick = 1)),
+    yaxis = list(title = "", tickformat = "$~s", tickfont = tick_font,
+                 range = c(low - span * 0.08, top + span * 0.04), gridcolor = ink$grid, gridwidth = 1,
+                 zeroline = FALSE, showline = FALSE, ticks = "", nticks = 7,
+                 automargin = FALSE, fixedrange = TRUE),
+    shapes = list(list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = base, y1 = base, layer = "below",
+                       line = list(color = ink$zero, width = 1))),
+    # its label goes under the line at the right end (the lines all start at
+    # the left), unless the shares finish just under the line
+    annotations = c(labels, notes, list(modifyList(
+      list(xref = "paper", y = base, yanchor = "top", yshift = -2, showarrow = FALSE,
+           text = paste(fmt_amount(base), "invested"), font = list(size = 11, color = ink$muted)),
+      if(path$shares[n] < base && path$shares[n] > base - span * 0.12)
+        list(x = 0, xanchor = "left", xshift = 4) else list(x = 1, xanchor = "right", xshift = -4)))),
+    margin = list(t = 8, r = 84, b = 30, l = 52),
+    hovermode = "x unified", hoverdistance = -1,
+    hoverlabel = list(bgcolor = ink$hover_bg, bordercolor = ink$hover_border,
+                      font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+                                  size = 12, color = ink$primary)))
+}
+
 ######################################################################
 #create final data frames
 ######################################################################
 # one country's annual returns (year, stock_accumulation, stock_price, bonds,
-# inflation) -> nominal and real returns and $100 indices in long format
+# inflation) -> nominal and real returns and $100 indices in long format.
+# Index: $100 the year before the first return, compounded by each year's return.
+# Real return: (1 + r) / (1 + inflation) - 1.
 prep_market <- function(raw, max_year = Inf){
-  start <- min(raw$year) - 1           # the index starts at $100 the year before the first return
-  raw <- 
-    raw[, c("year", "stock_accumulation", "stock_price", "bonds", "inflation")] %>% 
-    filter(year <= max_year) %>% 
-    rbind(data.frame(
-      year = start,
-      stock_accumulation = NA, 
-      stock_price = NA, 
-      bonds = NA, 
-      inflation = NA  
-    ), .)
-
-  #create new real return column and index columns for nominal and real returns
-  stock_temp <- 
-    raw %>% 
-    mutate(across(-c(year,inflation), 
-                  ~calc_real_return(., inflation), .names = '{.col}_rr')) %>% 
-    mutate(across(c(stock_accumulation,stock_price,bonds,inflation), 
-                  ~ifelse(year == start, 100, NA), .names = '{.col}_indx')) %>% 
-    mutate(stock_accumulation_indx = 
-             calc_index(stock_accumulation_indx, stock_accumulation , 1)) %>% 
-    mutate(stock_price_indx = 
-             calc_index(stock_price_indx, stock_price , 1))  %>% 
-    mutate(bonds_indx = 
-             calc_index(bonds_indx, bonds , 1)) %>% 
-    mutate(inflation_indx = 
-             calc_index(inflation_indx, inflation , 1)) %>%
-    mutate(across(c(stock_accumulation_rr,stock_price_rr,bonds_rr), 
-                  ~ifelse(year == start, 100, NA), .names = '{.col}_indx')) %>% 
-    mutate(stock_accumulation_rr_indx = 
-             calc_index(stock_accumulation_rr_indx, stock_accumulation_rr , 1)) %>% 
-    mutate(stock_price_rr_indx = 
-             calc_index(stock_price_rr_indx, stock_price_rr , 1))  %>% 
-    mutate(bonds_rr_indx = 
-             calc_index(bonds_rr_indx, bonds_rr , 1))
-
-
-
-
-  #create nominal and real dataframes for returns and index in long format    
-  stock_returns_nom <-
-    stock_temp %>% select(-contains("rr")) %>%   
-    select(year, !ends_with('indx')) %>% 
-    convert_to_tidy(val_to_name = 'percent_yoy') %>% 
-    mutate(market = recode(market,'bonds' = 'Bonds 10yr',
-                           'stock_price' = 'Stock Price',
-                           'stock_accumulation' = 'Stock Price + Div'))
-
-  stock_index_nom <- 
-    stock_temp %>% select(-contains("rr")) %>% 
-    select(year, ends_with('indx')) %>% 
-    mutate(across(c(-year), 
-                  ~ifelse(year == start, 100, .))) %>% 
-    convert_to_tidy(val_to_name = 'dollars') %>% 
-    mutate(market = recode(market,'bonds_indx' = 'Bonds 10yr',
-                           'stock_price_indx' = 'Stock Price',
-                           'stock_accumulation_indx' = 'Stock Price + Div'))
-
-  stock_returns_real <-
-    stock_temp %>% select(year, contains("rr")) %>% 
-    select(year, !ends_with('indx'))  %>% 
-    convert_to_tidy(val_to_name = 'percent_yoy') %>% 
-    mutate(market = recode(market,'bonds_rr' = 'Bonds 10yr',
-                           'stock_price_rr' = 'Stock Price',
-                           'stock_accumulation_rr' = 'Stock Price + Div'))
-
-  stock_index_real <- 
-    stock_temp %>% select(year, contains("rr")) %>% 
-    select(year, ends_with('indx')) %>% 
-    mutate(across(c(-year), 
-                  ~ifelse(year == start, 100, .))) %>% 
-    convert_to_tidy(val_to_name = 'dollars') %>% 
-    mutate(market = recode(market,'bonds_rr_indx' = 'Bonds 10yr',
-                           'stock_price_rr_indx' = 'Stock Price',
-                           'stock_accumulation_rr_indx' = 'Stock Price + Div'))
-  
-  list(returns_nom = stock_returns_nom, index_nom = stock_index_nom,
-       returns_real = stock_returns_real, index_real = stock_index_real)
+  cols <- c("bonds", "inflation", "stock_accumulation", "stock_price")
+  raw <- raw[raw$year <= max_year, c("year", cols)]
+  raw <- raw[order(raw$year), ]
+  start <- min(raw$year) - 1                 # the index starts at $100 the year before the first return
+  years <- c(start, raw$year)
+  nominal <- lapply(setNames(cols, cols), function(k) c(NA, raw[[k]]))
+  real <- lapply(nominal[cols != "inflation"], function(r) (1 + r) / (1 + nominal$inflation) - 1)
+  index <- function(r) c(100, 100 * cumprod(1 + r[-1]))
+  # long format, rows by year then series (the column order of the source data)
+  long <- function(vals, src_order, names, value){
+    k <- length(src_order)
+    out <- tibble::tibble(year = rep(years, each = k),
+                          market = factor(rep(unname(names[src_order]), times = length(years)), levels = unname(names[sort(src_order)])),
+                          v = as.vector(t(sapply(vals[src_order], identity))))
+    names(out)[3] <- value; out
+  }
+  nm  <- c(bonds = "Bonds 10yr", inflation = "inflation", stock_accumulation = "Stock Price + Div", stock_price = "Stock Price")
+  nmi <- c(bonds = "Bonds 10yr", inflation = "inflation_indx", stock_accumulation = "Stock Price + Div", stock_price = "Stock Price")
+  src  <- c("stock_accumulation", "stock_price", "bonds", "inflation")   # column order in the source data
+  srcr <- c("stock_accumulation", "stock_price", "bonds")
+  list(returns_nom  = long(nominal, src, nm, "percent_yoy"),
+       index_nom    = long(lapply(nominal, index), src, nmi, "dollars"),
+       returns_real = long(real, srcr, nm, "percent_yoy"),
+       index_real   = long(lapply(real, index), srcr, nm, "dollars"))
 }
 
 au_raw <- readRDS("data/australianstockmarket.RDS")
@@ -576,6 +612,7 @@ max_yr <- min(max(au_raw$year), max(us_raw$year))   # both countries cover the s
 min_yr <- min(au_raw$year) - 1
 markets <- list(au = prep_market(au_raw, max_yr),
                 us = prep_market(us_raw, max_yr))
+raws <- list(au = au_raw[au_raw$year <= max_yr, ], us = us_raw[us_raw$year <= max_yr, ])
 countries <- c(au = "Australia", us = "United States")
 
 
@@ -594,13 +631,16 @@ rebase_index <- function(df, min_year, max_year){
     ungroup()
 }
 
-# rolling returns over the full history for one window length
+# rolling returns over the full history for one window length: the average
+# yearly return over the no_years years ending in each year
 rolling_full <- function(mk, real, no_years){
-  create_rr_df(if(real) mk$index_real else mk$index_nom, 
-               filter = T, no_years = no_years) %>% 
-    ungroup() %>% 
-    filter(market != "inflation_indx") %>% 
-    mutate(percent = round(percent, 4))   # 0.01%; 2 dp made the lines stair-step
+  idx <- if(real) mk$index_real else mk$index_nom
+  idx %>%
+    filter(market != "inflation_indx") %>%
+    group_by(market) %>%
+    mutate(percent = round((dollars / lag(dollars, no_years))^(1 / no_years) - 1, 4)) %>%
+    ungroup() %>%
+    transmute(year, market, roll_years = factor(as.character(no_years)), percent)
 }
 
 ######################################################################
@@ -670,6 +710,8 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .country-switch { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
 .country-switch label { display: inline-flex; align-items: center; height: 28px; padding: 0 11px; margin: 0; cursor: pointer; color: var(--ink-3); font-size: .82rem; white-space: nowrap; }
 .country-switch label + input + label { border-left: 1px solid var(--line-2); }
+.country-switch .cflag { flex: none; margin-right: 7px; border-radius: 2px; box-shadow: 0 0 0 1px var(--line-2); opacity: .9; }
+.country-switch .btn-check:checked + label .cflag { opacity: 1; }
 .country-switch label:hover { color: var(--ink); }
 .country-switch .btn-check:checked + label { color: var(--ink); background: var(--line); }
 .country-switch .btn-check:focus-visible + label { outline: 2px solid var(--ink-3); outline-offset: -2px; }
@@ -700,14 +742,35 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .series-card .ctx:empty { display: none; }
 .series-card .flag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 3px; color: var(--ink); font-size: .68rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
 .stats-note { color: var(--ink-3); font-size: .8rem; margin: 10px 0 18px; }
+/* dividend calculator */
+.calc-q { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 22px 0 0; font-size: 1.02rem; color: var(--ink-2); }
+.calc-q .amount-wrap { position: relative; display: inline-flex; align-items: center; }
+.calc-q .cur { position: absolute; left: 10px; color: var(--ink-3); pointer-events: none; }
+.calc-q input { width: 130px; padding: 5px 10px 5px 22px; font-size: 1rem; font-weight: 500; color: var(--ink); border-color: var(--line-2); background-color: var(--raised); font-variant-numeric: tabular-nums; }
+.calc-q select { width: auto; padding: 5px 32px 5px 10px; font-size: 1rem; font-weight: 500; color: var(--ink); border-color: var(--line-2); background-color: var(--raised); font-variant-numeric: tabular-nums; }
+.calc-q input:focus, .calc-q select:focus { border-color: var(--ink-3); box-shadow: 0 0 0 3px var(--line); }
+.period { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 4px; font-size: .86rem; }
+.period-label { color: var(--ink-3); }
+.period-range { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.year-presets { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.year-presets button { border: 0; background: transparent; color: var(--ink-2); padding: 3px 10px; font-size: .8rem; line-height: 1.5; }
+.year-presets button + button { border-left: 1px solid var(--line-2); }
+.year-presets button:hover { color: var(--ink); }
+.year-presets button.active { color: var(--ink); background: var(--line); font-weight: 500; }
+.year-presets button:focus-visible { outline: 2px solid var(--ink-3); outline-offset: -2px; }
+.period-hint { color: var(--ink-3); font-size: .78rem; }
+.calc .series-card { cursor: default; }
+.calc .series-card:hover .name { color: var(--ink-2); }
+.calc .series-card.gain .dot { background: linear-gradient(90deg, var(--c) 50%, transparent 50%); background-size: 6px 3px; }
 
 /* year range slider under the chart: hairline track, fine handles */
 .years { padding: 0 77px 0 45px; }   /* plot margins (52 / 84) minus half a handle */
 .years .form-group { margin: 0; }
 .irs--shiny { height: 42px; }
-.irs--shiny .irs-line { height: 1px; top: 26px; background: var(--line-2); border: 0; border-radius: 0; }
-.irs--shiny .irs-bar { height: 2px; top: 25.5px; background: var(--ink-2); border: 0; }
-.irs--shiny .irs-handle { width: 14px; height: 14px; top: 19px; background: var(--page); border: 1.5px solid var(--ink-2); box-shadow: none; cursor: grab; }
+.irs--shiny .irs-line { height: 3px; top: 25px; background: var(--line-2); border: 0; border-radius: 2px; }
+.irs--shiny .irs-bar { height: 3px; top: 25px; background: var(--ink-2); border: 0; border-radius: 2px; }
+.irs--shiny .irs-handle { width: 18px; height: 18px; top: 17.5px; background: var(--raised); border: 2px solid var(--ink-2); box-shadow: 0 1px 3px rgba(0,0,0,.18); cursor: grab; }
+.irs--shiny .irs-handle:active { cursor: grabbing; }
 .irs--shiny .irs-handle:hover, .irs--shiny .irs-handle.state_hover { background: var(--page); border-color: var(--ink); }
 .irs--shiny .irs-handle > i:first-child { display: none; }
 .irs--shiny .irs-from, .irs--shiny .irs-to, .irs--shiny .irs-single { background: transparent; color: var(--ink-2); font-size: .8rem; font-weight: 500; top: -1px; padding: 0 2px; font-variant-numeric: tabular-nums; }
@@ -744,12 +807,17 @@ details.how li::marker { color: var(--ink-3); }
 .modal-body h5 { font-size: .95rem; font-weight: 600; color: var(--ink); }
 .modal-body a { color: var(--ink); }
 .modal-body hr { border-color: var(--line); opacity: 1; }
+.method-table { width: 100%; font-size: .86rem; margin: 4px 0 14px; font-variant-numeric: tabular-nums; }
+.method-table th { font-weight: 600; color: var(--ink); border-bottom: 1px solid var(--line); padding: 4px 10px 4px 0; }
+.method-table td { border-bottom: 1px solid var(--line); padding: 4px 10px 4px 0; vertical-align: top; }
 .modal-footer { border-top-color: var(--line); }
 
 @media (max-width: 640px) {
   .app { padding: 28px 16px 40px; }
   .app-header { flex-direction: column; align-items: flex-start; gap: 6px; padding-bottom: 14px; }
   .app-header h1 { font-size: 1.45rem; }
+  .header-actions { display: grid; grid-template-columns: auto auto 1fr; gap: 10px 16px; align-items: center; }
+  .header-actions .country-switch { grid-column: 1 / -1; justify-self: start; }
   .chart-bar, .chart-bar-left { max-width: 100%; min-width: 0; }
   .chart-bar-left > * { max-width: 100%; min-width: 0; }
   .seg { gap: 18px; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
@@ -771,6 +839,72 @@ details.how li::marker { color: var(--ink-3); }
   #chart { height: 640px !important; }   /* room for stacked rows on phones */
 }
 "
+
+# quick year ranges ending in the latest year (handled in the browser)
+year_presets <- function(){
+  div(class = "year-presets", role = "group", `aria-label` = "Quick year ranges",
+      lapply(c(10, 20, 50), function(n)
+        tags$button(type = "button", `data-span` = n, `aria-pressed` = "false", paste(n, "yrs"))),
+      tags$button(type = "button", `data-span` = 0, `aria-pressed` = "false", "All"))
+}
+calc_start <- 2000           # the calculator opens on calc_start to the latest year
+
+# a plain year <select> (kept in step with the years slider in the browser)
+year_select <- function(id, years, selected, label){
+  tags$select(id = id, class = "form-select", `aria-label` = label,
+              lapply(years, function(y) tags$option(value = y, selected = if(y == selected) NA, y)))
+}
+
+# browser side of the years controls: presets, the range text, the
+# calculator's year selects and amount box all follow the slider (input$years)
+years_js <- sprintf("
+(function(){
+  var MIN = %d, MAX = %d, CALC_START = %d;
+  // the chart tabs and the calculator each keep their own years
+  var ranges = {charts: [MIN, MAX], calc: [CALC_START, MAX]}, group = 'charts';
+  function slider(){ return $('#years').data('ionRangeSlider'); }
+  function sync(){
+    var s = slider(); if(!s) return;
+    var a = s.result.from, b = s.result.to;
+    ranges[group] = [a, b];
+    $('#years-range').text(a === b ? a : a + '\u2013' + b);
+    $('.year-presets button').each(function(){
+      var n = +this.dataset.span, on = n ? (b === MAX && a === MAX - n) : (a === MIN && b === MAX);
+      this.classList.toggle('active', on); this.setAttribute('aria-pressed', on);
+    });
+    $('#calc_from').val(Math.min(a, MAX - 1)); $('#calc_to').val(Math.max(b, MIN + 1));
+  }
+  function setYears(a, b){
+    var s = slider(); if(!s) return;
+    s.update({from: a, to: b}); $('#years').trigger('change'); sync();
+    // send now, not after the slider's usual delay, so a tab switch and its
+    // years reach the server together (the slider's own later send is a repeat)
+    if(window.Shiny && Shiny.setInputValue) Shiny.setInputValue('years', [a, b]);
+  }
+  $(document).on('change', '#years', sync);
+  // switching between the charts and the calculator restores that side's
+  // years (sent to the server together with the tab, so one redraw)
+  $(document).on('change', '#view input', function(){
+    var g = this.value === 'calc' ? 'calc' : 'charts';
+    if(g === group) return;
+    group = g; var r = ranges[g]; setYears(r[0], r[1]);
+  });
+  $(document).on('shiny:sessioninitialized', function(){ setTimeout(sync, 0); });
+  $(document).on('click', '.year-presets button', function(){
+    var n = +this.dataset.span; setYears(n ? MAX - n : MIN, MAX);
+  });
+  $(document).on('change', '#calc_from, #calc_to', function(){
+    var a = +$('#calc_from').val(), b = +$('#calc_to').val();
+    if(a >= b){ if(this.id === 'calc_from') b = Math.min(a + 1, MAX); else a = Math.max(b - 1, MIN); }
+    setYears(a, b);
+  });
+  // amount: show thousands separators once typing stops
+  $(document).on('blur', '#amount', function(){
+    var v = parseFloat(this.value.replace(/[^0-9.]/g, ''));
+    if(isFinite(v) && v > 0){ var c = v %% 1 ? 2 : 0; this.value = v.toLocaleString('en-AU', {minimumFractionDigits: c, maximumFractionDigits: c}); }
+  });
+  $(document).on('keydown', '#amount', function(e){ if(e.key === 'Enter') this.blur(); });
+})();", min_yr, max_yr, calc_start)
 
 # segmented control that behaves as a shiny radio input (input$view)
 segmented <- function(id, choices, selected){
@@ -825,7 +959,22 @@ series_toggles <- function(id){
 ui <- page(
   theme = app_theme,
   title = "Australian & US Stock Markets",
-  tags$head(tags$style(HTML(app_css))),
+  tags$head(tags$style(HTML(app_css)),
+            # plotly.js, shipped with the app (MIT licence: www/plotly-LICENSE.txt)
+            tags$script(src = "plotly-2.25.2.min.js"),
+            # output binding for figureOutput(): update the chart in place
+            tags$script(HTML("
+(function(){
+  var binding = new Shiny.OutputBinding();
+  $.extend(binding, {
+    find: function(scope){ return $(scope).find('.figure-output'); },
+    renderValue: function(el, fig){
+      if(!fig || !fig.data){ Plotly.purge(el); return; }
+      Plotly.react(el, fig.data, fig.layout, fig.config);
+    }
+  });
+  Shiny.outputBindings.register(binding, 'figure');
+})();"))),
   
   div(class = "app",
       
@@ -844,7 +993,8 @@ ui <- page(
                             c("Growth of $100" = "growth",
                               "Annual returns" = "annual",
                               "Rolling returns" = "rolling",
-                              "Falls & recoveries" = "falls"),
+                              "Falls & recoveries" = "falls",
+                              "Dividend calculator" = "calc"),
                             selected = "growth"),
                   conditionalPanel("input.view == 'rolling'", class = "window",
                                    selectInput("window", "Window",
@@ -852,17 +1002,39 @@ ui <- page(
                                                selected = 10, width = "auto", selectize = FALSE)),
                   # each tab keeps its own layout choice
                   conditionalPanel("input.view == 'annual'", layout_switch("layout_annual", "stacked")),
-                  conditionalPanel("input.view == 'rolling'", layout_switch("layout_rolling", "overlay")),
+                  conditionalPanel("input.view == 'rolling'", layout_switch("layout_rolling", "stacked")),
                   conditionalPanel("input.view == 'falls'", layout_switch("layout_falls", "stacked"))),
               input_switch("real", "Adjust for inflation", value = FALSE)),
           
+          # calculator: the question as a sentence; its years follow the slider
+          conditionalPanel("input.view == 'calc'", div(class = "calc-q",
+                           span("Invest"),
+                           span(class = "amount-wrap", span(class = "cur", "$"),
+                                tags$input(id = "amount", type = "text", class = "form-control", value = "10,000",
+                                           inputmode = "decimal", autocomplete = "off",
+                                           `aria-label` = "Amount invested, in dollars")),
+                           span("at the end of"),
+                           year_select("calc_from", min_yr:(max_yr - 1), calc_start, "First year"),
+                           span("until the end of"),
+                           year_select("calc_to", (min_yr + 1):max_yr, max_yr, "Last year"),
+                           year_presets())),
+
           uiOutput("chart_title"),
-          series_toggles("show"),
+          conditionalPanel("input.view != 'calc'", series_toggles("show")),
+          conditionalPanel("input.view == 'calc'", uiOutput("calc_cards")),
           uiOutput("stats_note"),
           
-          plotlyOutput("chart", height = "540px"),
+          # years: current range and quick picks; the slider under the chart does any range
+          conditionalPanel("input.view != 'calc'", div(class = "period",
+                           span(class = "period-label", "Years"),
+                           span(id = "years-range", class = "period-range", paste0(min_yr, "\u2013", max_yr)),
+                           year_presets(),
+                           span(class = "period-hint", "or drag the handles under the chart"))),
+
+          figureOutput("chart", height = "540px"),
           # tell the server about phone widths (fewer event notes on the growth chart)
           tags$script(HTML("$(document).on('shiny:connected', function(){ Shiny.setInputValue('narrow', window.innerWidth < 640); });
+" , years_js, "
 $(document).on('change', '#view input', function(){ var l = document.querySelector('label[for=' + this.id + ']'); if(l) l.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'smooth'}); });")),
           
           div(class = "years",
@@ -872,7 +1044,7 @@ $(document).on('change', '#view input', function(){ var l = document.querySelect
                           sep = "", ticks = FALSE, width = "100%")),
           
           div(class = "chart-foot",
-              div(conditionalPanel("['rolling', 'falls'].indexOf(input.view) >= 0",
+              div(conditionalPanel("['rolling', 'falls', 'calc'].indexOf(input.view) >= 0",
                                    tags$details(class = "how",
                                                 tags$summary("How to read this chart"),
                                                 uiOutput("how_to")))),
@@ -891,12 +1063,44 @@ server <- function(input, output, session) {
   real <- reactive(isTRUE(input$real))
   stacked <- reactive(switch(input$view,
                              annual  = !identical(input$layout_annual, "overlay"),
-                             rolling = identical(input$layout_rolling, "stacked"),
+                             rolling = !identical(input$layout_rolling, "overlay"),
                              falls   = !identical(input$layout_falls, "overlay"),
                              FALSE))
   theme <- reactive(if(identical(input$mode, "dark")) "dark" else "light")
   country <- reactive(if(identical(input$country, "us")) "us" else "au")
   mk <- reactive(markets[[country()]])
+
+  #### dividend calculator ####
+  amount <- reactive({
+    a <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", if(is.null(input$amount)) "" else input$amount)))
+    if(length(a) != 1 || is.na(a) || a <= 0) 10000 else min(a, 1e12)
+  }) %>% debounce(350)
+  calc_df <- reactive({
+    req(input$years)
+    dividend_path(raws[[country()]], input$years[1], input$years[2], amount(), real())
+  })
+  output$calc_cards <- renderUI({
+    p <- calc_df(); n <- nrow(p); yrs <- p$year[n] - p$year[1]
+    re <- p$reinvested[n]; sh <- p$shares[n]; ca <- p$cash[n]; taken <- sh + ca
+    rate <- function(v) if(yrs > 0) sprintf("%.1f%% a year", 100 * ((v / amount())^(1 / yrs) - 1)) else ""
+    card <- function(key, name, value, rate, ctx, cls = NULL){
+      i <- match(key, series$key)
+      div(class = paste("series-card", cls),
+          style = paste0("--cl:", series$colour[i], ";--cd:", series$colour_dark[i]),
+          div(class = "name", span(class = "dot"), span(name)),
+          div(class = "figs", span(class = "value", value), span(class = "rate", rate)),
+          div(class = "ctx", ctx))
+    }
+    div(class = "series calc",
+        card("div", "Dividends reinvested", fmt_dollars(re), rate(re),
+             "Every dividend bought more shares"),
+        card("price", "Dividends taken as cash", fmt_dollars(taken), rate(taken),
+             sprintf("Shares worth %s, plus %s of dividends paid out", fmt_dollars(sh), fmt_dollars(ca))),
+        card("div", "Extra from reinvesting", paste0("+", fmt_dollars(re - taken)),
+             if(taken > 0) sprintf("%.1f\u00d7 as much", re / taken) else "",
+             if(yrs > 0) sprintf("Reinvested, the %s of dividends grew to %s", fmt_dollars(ca), fmt_dollars(re - sh))
+             else "", cls = "gain"))
+  })
 
   # index rebased to $100 at the first selected year (unrounded)
   index_df <- reactive({
@@ -1002,7 +1206,12 @@ server <- function(input, output, session) {
   
   output$stats_note <- renderUI({
     infl <- if(real()) "after inflation" else "before inflation"
-    txt <- if(identical(input$view, "falls")){
+    txt <- if(identical(input$view, "calc")){
+      sprintf("%s invested in %s shares at the end of %s, valued at the end of %s, %s.",
+              fmt_amount(amount()), if(country() == "us") "US" else "Australian",
+              input$years[1], input$years[2],
+              if(real()) paste0("after inflation (", input$years[1], " dollars)") else "before inflation")
+    } else if(identical(input$view, "falls")){
       sprintf("Each year-end value against the highest value since %s, %s. Click a series to show or hide it.",
               input$years[1], infl)
     } else if(identical(input$view, "rolling")){
@@ -1020,6 +1229,16 @@ server <- function(input, output, session) {
   
   #### rolling: how to read ####
   output$how_to <- renderUI({
+    if(identical(input$view, "calc")) return(tags$ul(
+      tags$li("Set the amount and the years in the sentence above the chart, or drag the handles under it. The money goes in at the end of the first year."),
+      tags$li("Dividends reinvested follows the total-return index: each dividend buys more shares, which then pay dividends of their own. That snowball is the compounding."),
+      tags$li("Dividends taken as cash holds the same shares and adds up the dividends they paid, kept as cash that earns nothing. The gap between the two is what reinvesting added."),
+      tags$li("A year's dividend is the difference between the total return and the price return, applied to the shares' value at the start of that year."),
+      tags$li("No tax, fees or franking credits are included. With inflation on, every amount is in first-year dollars."),
+      # opens the About window, then scrolls to the method once it has loaded
+      tags$li(HTML(paste0("The full method, with a worked example, is in ",
+              tags$a(href = "#", onclick = "$(document).one('shown.bs.modal', function(){ var s = document.getElementById('dividend-method'); if(s) s.scrollIntoView({block: 'start'}); }); document.getElementById('about').click(); return false;",
+                     "About the data"), ".")))))
     if(identical(input$view, "falls")) return(tags$ul(
       tags$li("Each point shows how far the value sat below its highest year-end value so far. Zero means a new high."),
       tags$li("Values are at year end, so falls and rebounds within a year (such as October 1987) don't show in full."),
@@ -1043,6 +1262,9 @@ server <- function(input, output, session) {
   output$chart_title <- renderUI({
     real_txt <- if(real()) ", after inflation" else ""
     switch(input$view,
+           calc = div(class = "chart-title",
+                      tags$h2(paste0("What ", fmt_amount(amount()), " became, dividends reinvested or taken as cash", real_txt)),
+                      tags$p("The lower shading is the dividends paid out; the upper shading is what reinvesting them added.")),
            growth = div(class = "chart-title",
                         tags$h2(paste0("Growth of $100 invested in ", input$years[1], real_txt)),
                         tags$p("Log scale: each gridline is ten times the one below, so equal slopes mean equal growth rates.")),
@@ -1065,11 +1287,12 @@ server <- function(input, output, session) {
                                                     input$window, min(sapply(rolling_ctx(), `[[`, "first")))))))
   })
   
-  output$chart <- renderPlotly({
+  output$chart <- renderFigure({
     req(input$mode)                        # wait for the browser's light/dark mode
     yrs <- input$years
     keep <- series$market[series$key %in% shown()]
     switch(input$view,
+           calc = dividend_plot(calc_df(), yrs, narrow = isTRUE(input$narrow), theme = theme()),
            growth = {
              df <- index_df() %>% filter(market %in% keep)
              line_plot(df %>% mutate(dollars = round(dollars)),
@@ -1141,17 +1364,27 @@ server <- function(input, output, session) {
            })
   }) %>% bindCache(country(), input$view, real(), input$years, shown(), theme(), stacked(),
                    if(identical(input$view, "rolling")) input$window,
-                   if(identical(input$view, "growth")) isTRUE(input$narrow))
+                   if(identical(input$view, "calc")) amount(),
+                   if(input$view %in% c("growth", "calc")) isTRUE(input$narrow))
   
   #### download: the data behind the current chart ####
   output$download <- downloadHandler(
     filename = function(){
       paste0(if(country() == "us") "us" else "australian", "-market-", input$view,
              if(input$view == "rolling") paste0("-", input$window, "yr"),
+             if(input$view == "calc") paste0("-", format(amount(), scientific = FALSE)),
              "-", input$years[1], "-", input$years[2],
              if(real()) "-real", ".csv")
     },
     content = function(file){
+      if(identical(input$view, "calc")){
+        p <- calc_df()
+        return(write.csv(data.frame(year = p$year,
+                                    dividends_reinvested = round(p$reinvested, 2),
+                                    shares_dividends_taken = round(p$shares, 2),
+                                    dividends_paid_to_date = round(p$cash, 2)),
+                         file, row.names = FALSE))
+      }
       df <- switch(input$view,
                    falls   = falls_df() %>% mutate(value = dd),
                    growth  = index_df() %>% mutate(value = round(dollars, 2)),
