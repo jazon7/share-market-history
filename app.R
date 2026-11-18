@@ -157,6 +157,9 @@ line_plot <-
            y_range = NULL,       # in data units
            hline = NULL,
            band = NULL,          # list(lo, hi, med, colour): typical-range band
+           events = NULL,        # data frame(year, label): dotted markers with notes on top
+           zero_label = NULL,    # note above the 0 line at the left (e.g. "New high")
+           narrow = FALSE,       # phone width: label fewer events
            theme = "light"){
     ink <- inks[[theme]]
     
@@ -226,6 +229,21 @@ line_plot <-
       xanchor = "left", xshift = 10, showarrow = FALSE,
       font = list(size = lab$size[i], color = lab$colour[i])))
     
+    # events: a dotted line each; notes only where they don't crowd the last one
+    ev <- if(is.null(events)) data.frame(year = numeric(), label = character(), short = character())
+          else events[events$year > x_range[1] & events$year < x_range[2], ]
+    ev_shapes <- lapply(ev$year, function(x) list(
+      type = "line", xref = "x", x0 = x, x1 = x, yref = "paper", y0 = 0, y1 = 1, layer = "below",
+      line = list(color = ink$axis, width = 1, dash = "dot")))
+    gap <- diff(x_range) * if(narrow) 0.18 else 0.07; last <- -Inf; ev_notes <- list()
+    for(i in seq_len(nrow(ev))) if(ev$year[i] - last >= gap){
+      last <- ev$year[i]
+      ev_notes <- c(ev_notes, list(list(
+        x = ev$year[i], xref = "x", y = 1, yref = "paper", yanchor = "bottom", yshift = 2,
+        text = if(narrow) ev$short[i] else ev$label[i], showarrow = FALSE,
+        font = list(size = 10.5, color = ink$muted))))
+    }
+    
     p %>% 
       layout(
         font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
@@ -257,9 +275,15 @@ line_plot <-
                  line = list(color = band$colour, width = 1), opacity = 0.45)),
           if(!is.null(hline)) list(list(
             type = "line", xref = "paper", x0 = 0, x1 = 1, layer = "below",
-            y0 = hline, y1 = hline, line = list(color = ink$zero, width = 1)))),
-        annotations = labels,
-        margin = list(t = 8, r = 84, b = 30, l = 52),  # fixed so the slider lines up below
+            y0 = hline, y1 = hline, line = list(color = ink$zero, width = 1))),
+          ev_shapes),
+        annotations = c(labels, ev_notes,
+                        # zero-line note, inside the plot at the left, just above the line
+                        if(!is.null(zero_label)) list(list(
+                          x = 0, xref = "paper", xanchor = "left", xshift = 4, y = 0,
+                          yanchor = "bottom", yshift = 2, showarrow = FALSE, text = zero_label,
+                          font = list(size = 11, color = ink$muted)))),
+        margin = list(t = if(nrow(ev)) 24 else 8, r = 84, b = 30, l = 52),  # l/r fixed so the slider lines up below
         bargap = 0.35,
         hovermode = "x unified",
         hoverdistance = -1,
@@ -276,9 +300,10 @@ line_plot <-
 # series' own typical-range band and median.
 #######################################################
 stacked_plot <- function(df, y_col, x_range,
-                         type = c("bar", "line"),
+                         type = c("bar", "line", "area"),
                          ref = NULL,          # named by label: list(y, text) reference line per row
                          bands = NULL,        # named by label: list(lo, hi, med)
+                         zero_label = NULL,   # right-margin note on each row's 0 line
                          y_format = ".1%", tick_format = ".0%",
                          theme = "light"){
   type <- match.arg(type)
@@ -304,6 +329,8 @@ stacked_plot <- function(df, y_col, x_range,
     } else {
       last <- d[which.max(d$year), ]
       plot_ly(d, x = ~year, y = ~y, type = "scatter", mode = "lines", name = l,
+              fill = if(type == "area") "tozeroy" else "none",
+              fillcolor = if(type == "area") fade(pal[[l]], if(theme == "dark") 0.28 else 0.18),
               line = list(color = pal[[l]], width = if(l == series$label[1]) 2.25 else 1.8),
               hovertemplate = paste0(l, ": %{y:", y_format, "}<extra></extra>")) %>% 
         add_trace(data = last, x = ~year, y = ~y, type = "scatter", mode = "markers",
@@ -333,6 +360,9 @@ stacked_plot <- function(df, y_col, x_range,
         font = list(size = 11, color = ink$muted))))
     }
     shapes <- c(shapes, list(hline(0, ink$zero)))
+    if(!is.null(zero_label)) notes <- c(notes, list(list(
+      xref = "paper", x = 1, xanchor = "left", xshift = 10, yref = yref, y = 0,
+      showarrow = FALSE, text = zero_label, font = list(size = 11, color = ink$muted))))
     if(!is.null(ref[[l]])){
       shapes <- c(shapes, list(hline(ref[[l]]$y, ink$primary, 0.55)))
       notes <- c(notes, list(list(
@@ -352,7 +382,7 @@ stacked_plot <- function(df, y_col, x_range,
   x_axis <- list(title = "", range = if(type == "bar") x_range + c(-0.6, 0.6) else x_range,
                  tickformat = "d", tickangle = 0, tickfont = tick_font,
                  showgrid = FALSE, zeroline = FALSE, showline = FALSE, ticks = "",
-                 showspikes = type == "line", spikemode = "across", spikesnap = "cursor",
+                 showspikes = type != "bar", spikemode = "across", spikesnap = "cursor",
                  spikethickness = 1, spikecolor = ink$axis, spikedash = "solid",
                  fixedrange = TRUE)
   lay <- list(p,
@@ -395,6 +425,36 @@ layout_switch <- function(id, selected){
                      tags$label(`for` = bid, title = o[[2]], `aria-label` = o[[2]], o[[3]]))
            }))
 }
+
+#######################################################
+# falls from the peak
+#######################################################
+# "−45%" with a real minus sign
+fmt_pct <- function(x, digits = 0) sub("^-", "−", sprintf(paste0("%.", digits, "f%%"), 100 * x))
+
+# translucent version of a hex colour, for area fills
+fade <- function(hex, a){ v <- col2rgb(hex); sprintf("rgba(%d,%d,%d,%.2f)", v[1], v[2], v[3], a) }
+
+# worst fall from a previous high: when it peaked, bottomed and recovered
+fall_stats <- function(year, dollars){
+  dd <- dollars / cummax(dollars) - 1
+  if(!length(dd) || min(dd) > -1e-9) return(list(worst = 0, now = 0))
+  i <- which.min(dd)
+  peak_i <- which.max(dollars[seq_len(i)])
+  back <- which(dollars >= dollars[peak_i] & seq_along(dollars) > i)[1]
+  list(worst = dd[i], peak = year[peak_i], low = year[i],
+       back = if(is.na(back)) NA else year[back], now = dd[length(dd)])
+}
+
+# market events marked on the growth chart
+events <- tibble::tribble(
+  ~year, ~label,             ~short,
+  1893,  "1890s bank crash", "Bank crash",
+  1930,  "Depression",       "Depression",
+  1974,  "1974 crash",       "1974",
+  1987,  "1987 crash",       "1987",
+  2008,  "GFC",              "GFC",
+  2020,  "COVID",            "COVID")
 
 # $12.4M, $148k, $1,234
 fmt_dollars <- function(x){
@@ -644,7 +704,11 @@ details.how li::marker { color: var(--ink-3); }
   .app { padding: 28px 16px 40px; }
   .app-header { flex-direction: column; align-items: flex-start; gap: 6px; padding-bottom: 14px; }
   .app-header h1 { font-size: 1.45rem; }
-  .seg { gap: 18px; }
+  .chart-bar, .chart-bar-left { max-width: 100%; min-width: 0; }
+  .chart-bar-left > * { max-width: 100%; min-width: 0; }
+  .seg { gap: 18px; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .seg::-webkit-scrollbar { display: none; }
+  .seg .btn { white-space: nowrap; }
   .seg .btn { font-size: .86rem; padding: 12px 0 10px; }
   .chart-bar > .shiny-input-container { margin: 6px 0 10px; }
   .series-card { padding: 0 10px; }
@@ -732,7 +796,8 @@ ui <- page(
                   segmented("view",
                             c("Growth of $100" = "growth",
                               "Annual returns" = "annual",
-                              "Rolling returns" = "rolling"),
+                              "Rolling returns" = "rolling",
+                              "Falls & recoveries" = "falls"),
                             selected = "growth"),
                   conditionalPanel("input.view == 'rolling'", class = "window",
                                    selectInput("window", "Window",
@@ -740,7 +805,8 @@ ui <- page(
                                                selected = 10, width = "auto", selectize = FALSE)),
                   # each tab keeps its own layout choice
                   conditionalPanel("input.view == 'annual'", layout_switch("layout_annual", "stacked")),
-                  conditionalPanel("input.view == 'rolling'", layout_switch("layout_rolling", "overlay"))),
+                  conditionalPanel("input.view == 'rolling'", layout_switch("layout_rolling", "overlay")),
+                  conditionalPanel("input.view == 'falls'", layout_switch("layout_falls", "stacked"))),
               input_switch("real", "Adjust for inflation", value = FALSE)),
           
           uiOutput("chart_title"),
@@ -748,6 +814,9 @@ ui <- page(
           uiOutput("stats_note"),
           
           plotlyOutput("chart", height = "540px"),
+          # tell the server about phone widths (fewer event notes on the growth chart)
+          tags$script(HTML("$(document).on('shiny:connected', function(){ Shiny.setInputValue('narrow', window.innerWidth < 640); });
+$(document).on('change', '#view input', function(){ var l = document.querySelector('label[for=' + this.id + ']'); if(l) l.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'smooth'}); });")),
           
           div(class = "years",
               sliderInput("years", NULL,
@@ -756,7 +825,7 @@ ui <- page(
                           sep = "", ticks = FALSE, width = "100%")),
           
           div(class = "chart-foot",
-              div(conditionalPanel("input.view == 'rolling'",
+              div(conditionalPanel("['rolling', 'falls'].indexOf(input.view) >= 0",
                                    tags$details(class = "how",
                                                 tags$summary("How to read this chart"),
                                                 uiOutput("how_to")))),
@@ -779,6 +848,7 @@ server <- function(input, output, session) {
   stacked <- reactive(switch(input$view,
                              annual  = !identical(input$layout_annual, "overlay"),
                              rolling = identical(input$layout_rolling, "stacked"),
+                             falls   = !identical(input$layout_falls, "overlay"),
                              FALSE))
   theme <- reactive(if(identical(input$mode, "dark")) "dark" else "light")
 
@@ -808,6 +878,18 @@ server <- function(input, output, session) {
       filter(between(year, input$years[1], input$years[2]))
   })
 
+  # fall below the highest value so far (since the first selected year)
+  falls_df <- reactive({
+    index_df() %>% group_by(market) %>% arrange(year, .by_group = TRUE) %>%
+      mutate(dd = dollars / cummax(dollars) - 1) %>% ungroup()
+  })
+  falls_stats <- reactive({
+    df <- falls_df()
+    lapply(setNames(series$market, series$key), function(m){
+      d <- df[df$market == m, ]; fall_stats(d$year, d$dollars)
+    })
+  })
+  
   #### headline figures in the series cards ####
   shown <- reactive({
     s <- input$show
@@ -841,6 +923,17 @@ server <- function(input, output, session) {
                            if(!is.null(flag)) span(class = "flag", flag)))
       }))
     }
+    if(identical(input$view, "falls")){
+      return(lapply(falls_stats(), function(f){
+        if(f$worst == 0) return(list(value = "None", rate = "never below an earlier high",
+                                     ctx = NULL))
+        list(value = fmt_pct(f$worst),
+             rate = sprintf("%d peak to %d low", f$peak, f$low),
+             ctx = tagList(if(is.na(f$back)) "Not yet back above that peak"
+                           else sprintf("Back above the peak by %d, %d years after it", f$back, f$back - f$peak),
+                           if(f$now < -0.05) span(class = "flag", sprintf("%s below peak now", fmt_pct(f$now)))))
+      }))
+    }
     df <- index_df()
     y0 <- input$years[1]; y1 <- input$years[2]; n <- y1 - y0
     lapply(setNames(seq_len(nrow(series)), series$key), function(i){
@@ -862,7 +955,11 @@ server <- function(input, output, session) {
   })
   
   output$stats_note <- renderUI({
-    txt <- if(identical(input$view, "rolling")){
+    infl <- if(real()) "after inflation" else "before inflation"
+    txt <- if(identical(input$view, "falls")){
+      sprintf("Each year-end value against the highest value since %s, %s. Click a series to show or hide it.",
+              input$years[1], infl)
+    } else if(identical(input$view, "rolling")){
       first <- min(sapply(rolling_ctx(), `[[`, "first"))
       sprintf("Average yearly return over the %s years to %s, %s, ranked against every %s-year period since %s. Click a series to show or hide it.",
               input$window, input$years[2], if(real()) "after inflation" else "before inflation",
@@ -877,6 +974,11 @@ server <- function(input, output, session) {
   
   #### rolling: how to read ####
   output$how_to <- renderUI({
+    if(identical(input$view, "falls")) return(tags$ul(
+      tags$li("Each point shows how far the value sat below its highest year-end value so far. Zero means a new high."),
+      tags$li("Values are at year end, so falls and rebounds within a year (such as October 1987) don't show in full."),
+      tags$li("The cards give the worst fall in the selected years, the years of the peak and the low, and when the earlier peak was regained."),
+      tags$li("Bonds use each December's 10-year yield as that year's return, so before inflation they never fall. Turn on inflation to see losses of buying power.")))
     k <- as.numeric(input$window); y1 <- input$years[2]
     first <- min(sapply(rolling_ctx(), `[[`, "first"))
     tags$ul(
@@ -902,6 +1004,10 @@ server <- function(input, output, session) {
                         tags$h2(paste0("Calendar-year returns", real_txt)),
                         tags$p(if(stacked()) "Return in each year, one row per series on a shared scale. The line in each row is the steady yearly rate that gives the same result over the period."
                                else "Return in each year.")),
+           falls = div(class = "chart-title",
+                       tags$h2(paste0("Falls from the previous high", real_txt)),
+                       tags$p(if(stacked() && length(shown()) > 1) "How far each series sat below its highest value so far. The line in each row marks its worst fall."
+                              else "How far each series sat below its highest value so far.")),
            rolling = div(class = "chart-title",
                          tags$h2(paste0("Rolling ", input$window, "-year returns", real_txt)),
                          tags$p(paste0("Average yearly return over the ", input$window,
@@ -928,6 +1034,7 @@ server <- function(input, output, session) {
                        log_y = TRUE,
                        y_range = c(min(c(df$dollars, 100), na.rm = TRUE),
                                    max(df$dollars, na.rm = TRUE)),
+                       events = events, narrow = isTRUE(input$narrow),
                        theme = theme())
            },
            annual = {
@@ -942,6 +1049,22 @@ server <- function(input, output, session) {
              } else {
                line_plot(df, y_col = "percent_yoy", x_range = yrs,
                          y_format = ".1%", tick_format = ".0%", hline = 0, theme = theme())
+             }
+           },
+           falls = {
+             df <- falls_df() %>% filter(market %in% keep)
+             if(stacked() && length(keep) > 1){
+               ref <- lapply(setNames(series$key, series$label), function(k){
+                 f <- falls_stats()[[k]]
+                 if(f$worst == 0) NULL else list(y = f$worst, text = paste("worst", fmt_pct(f$worst)))
+               })
+               stacked_plot(df, "dd", yrs, type = "area", ref = ref, zero_label = "New high",
+                            theme = theme())
+             } else {
+               lo <- min(c(df$dd, -0.01), na.rm = TRUE)
+               line_plot(df, y_col = "dd", x_range = yrs, y_format = ".1%", tick_format = ".0%",
+                         y_range = c(lo * 1.04, -lo * 0.07),    # headroom above 0 for the note
+                         hline = 0, zero_label = "New high", theme = theme())
              }
            },
            rolling = {
@@ -970,7 +1093,8 @@ server <- function(input, output, session) {
              }
            })
   }) %>% bindCache(input$view, real(), input$years, shown(), theme(), stacked(),
-                   if(identical(input$view, "rolling")) input$window)
+                   if(identical(input$view, "rolling")) input$window,
+                   if(identical(input$view, "growth")) isTRUE(input$narrow))
   
   #### download: the data behind the current chart ####
   output$download <- downloadHandler(
@@ -982,6 +1106,7 @@ server <- function(input, output, session) {
     },
     content = function(file){
       df <- switch(input$view,
+                   falls   = falls_df() %>% mutate(value = dd),
                    growth  = index_df() %>% mutate(value = round(dollars, 2)),
                    annual  = returns_df() %>% mutate(value = percent_yoy),
                    rolling = rolling_df() %>% mutate(value = percent))
