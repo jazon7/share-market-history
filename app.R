@@ -89,6 +89,26 @@ renderFigure <- function(expr){
 }
 
 #######################################################
+# dollar axis ticks: $100, $1k, $2.5M, $12B (plotly's own formats give "$1000"
+# next to "$10k", or "G" for billions), with enough of them on short ranges
+fmt_tick <- function(v) vapply(v, function(x){
+  k <- findInterval(abs(x), c(1e3, 1e6, 1e9))             # 0: units, 1: k, 2: M, 3: B
+  paste0("$", trimws(formatC(x / 1000^k, format = "fg", digits = 3)), c("", "k", "M", "B")[k + 1])
+}, "")
+dollar_ticks <- function(lo, hi, log = FALSE){
+  v <- if(log){
+    steps <- list(1, c(1, 2, 5), c(1, 1.5, 2, 3, 5, 7), c(1, 1.2, 1.4, 1.6, 1.8, 2, 2.5, 3, 4, 5, 6, 7, 8, 9))
+    for(m in steps){
+      v <- sort(outer(m, 10^(floor(log10(lo)):ceiling(log10(hi)))))
+      v <- v[v >= lo & v <= hi]
+      if(length(v) >= 3) break
+    }
+    if(length(v) >= 3) v else pretty(c(lo, hi), 4)
+  } else pretty(c(lo, hi), 5)
+  v <- v[v >= lo & v <= hi]
+  list(tickmode = "array", tickvals = I(v), ticktext = I(fmt_tick(v)))
+}
+
 # line chart
 #######################################################
 line_plot <- 
@@ -143,8 +163,9 @@ line_plot <-
     }
     
     tick_font <- list(size = 11.5, color = ink$muted)
+    dollars <- identical(tick_format, "$~s")      # dollar axes get their own ticks
     y_axis <- list(title = "",
-                   tickformat = tick_format,
+                   tickformat = if(!dollars) tick_format,
                    tickfont = tick_font,
                    gridcolor = ink$grid, gridwidth = 1,
                    zeroline = FALSE, showline = FALSE,
@@ -153,8 +174,11 @@ line_plot <-
                    fixedrange = TRUE)
     if(log_y){
       y_axis$type <- "log"
-      y_axis$dtick <- 1                       # one tick per power of 10
       if(!is.null(y_range)) y_axis$range <- log10(y_range) + c(-0.05, 0.05)
+      if(dollars){
+        r <- if(!is.null(y_range)) y_range else range(df$y, na.rm = TRUE)
+        y_axis <- c(y_axis, dollar_ticks(r[1] / 10^0.03, r[2] * 10^0.03, log = TRUE))
+      } else y_axis$dtick <- 1                # one tick per power of 10
     } else if(!is.null(y_range)){
       y_axis$range <- y_range
     }
@@ -552,10 +576,11 @@ dividend_plot <- function(path, x_range, narrow = FALSE, theme = "light"){
                    showspikes = TRUE, spikemode = "across", spikesnap = "cursor",
                    spikethickness = 1, spikecolor = ink$axis, spikedash = "solid", fixedrange = TRUE),
               if(diff(x_range) <= 10) list(dtick = 1)),
-    yaxis = list(title = "", tickformat = "$~s", tickfont = tick_font,
+    yaxis = c(list(title = "", tickfont = tick_font,
                  range = c(low - span * 0.08, top + span * 0.04), gridcolor = ink$grid, gridwidth = 1,
                  zeroline = FALSE, showline = FALSE, ticks = "", nticks = 7,
                  automargin = FALSE, fixedrange = TRUE),
+               dollar_ticks(low - span * 0.08, top + span * 0.04)),
     shapes = list(list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = base, y1 = base, layer = "below",
                        line = list(color = ink$zero, width = 1))),
     # its label goes under the line at the right end (the lines all start at
@@ -753,7 +778,7 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .period-label { color: var(--ink-3); }
 .period-range { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 .year-presets { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
-.year-presets button { border: 0; background: transparent; color: var(--ink-2); padding: 3px 10px; font-size: .8rem; line-height: 1.5; }
+.year-presets button { border: 0; background: transparent; color: var(--ink-2); padding: 3px 9px; font-variant-numeric: tabular-nums; font-size: .8rem; line-height: 1.5; }
 .year-presets button + button { border-left: 1px solid var(--line-2); }
 .year-presets button:hover { color: var(--ink); }
 .year-presets button.active { color: var(--ink); background: var(--line); font-weight: 500; }
@@ -843,8 +868,11 @@ details.how li::marker { color: var(--ink-3); }
 # quick year ranges ending in the latest year (handled in the browser)
 year_presets <- function(){
   div(class = "year-presets", role = "group", `aria-label` = "Quick year ranges",
-      lapply(c(10, 20, 50), function(n)
-        tags$button(type = "button", `data-span` = n, `aria-pressed` = "false", paste(n, "yrs"))),
+      lapply(c(1, 3, 5, 10, 20, 50), function(n)
+        tags$button(type = "button", `data-span` = n, `aria-pressed` = "false",
+                    title = if(n == 1) "Last year" else paste("Last", n, "years"),
+                    `aria-label` = if(n == 1) "Last year" else paste("Last", n, "years"),
+                    paste0(n, "Y"))),
       tags$button(type = "button", `data-span` = 0, `aria-pressed` = "false", "All"))
 }
 calc_start <- 2000           # the calculator opens on calc_start to the latest year

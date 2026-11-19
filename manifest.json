@@ -1264,10 +1264,10 @@
   },
   "files": {
     "about.Rhtml": {
-      "checksum": "bc820327c31e98b83f28c26247c64cbb"
+      "checksum": "7ea4ce20d834d871e563480b01b1db8b"
     },
     "app.R": {
-      "checksum": "1ae80e38ed06f25a973d32aef0e9f3e7"
+      "checksum": "9057b11ece2b43eb682be68ada8e7ebc"
     },
     "data/australianstockmarket.RDS": {
       "checksum": "8aef7afe2abdd6f8741b0311f1c0863a"
