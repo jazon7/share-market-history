@@ -1207,6 +1207,13 @@ ui <- page(
           tags$script(HTML("$(document).on('shiny:connected', function(){ Shiny.setInputValue('narrow', window.innerWidth < 640); });
 " , years_js, "
 $(document).on('change', '#view input', function(){ $('.years').toggle(this.value !== 'value'); });
+// the Valuation tab uses US data only: show it for the US, and leave it for Growth when switching to Australia
+function syncValueTab(){
+  var us = $('#country input:checked').val() === 'us';
+  $('label[for=view_value]').toggle(us);
+  if(!us && $('#view_value').is(':checked')) $('label[for=view_growth]').click();
+}
+$(document).on('change', '#country input', syncValueTab); $(syncValueTab);
 $(document).on('change', '#view input', function(){ var l = document.querySelector('label[for=' + this.id + ']'); if(l) l.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'smooth'}); });")),
           
           div(class = "years",
@@ -1425,7 +1432,6 @@ server <- function(input, output, session) {
       d <- value_df(); s <- d[!is.na(d$fwd), ]
       paste0(sprintf("US shares with dividends, %s. Starting points from the end of %d to the end of %d; each bar is the median of one fifth of them. ",
                      infl, min(s$year), max(s$year)),
-             if(country() == "au") "Long-run earnings data isn't available for Australia, so this view uses US shares. " else "",
              "Hover over a dot for its years.")
     } else if(identical(input$view, "calc")){
       sprintf("%s invested in %s shares at the end of %s, valued at the end of %s, %s.",
