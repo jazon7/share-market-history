@@ -690,6 +690,28 @@ monthly_index <- function(m, real){
 }
 us_falls_index <- list(nom = monthly_index(us_monthly, FALSE), real = monthly_index(us_monthly, TRUE))
 
+# S&P 500 bear markets at daily closes (Yardeni Research, from S&P data):
+# shown under the US falls chart, since monthly averages smooth the worst days
+bears <- read.csv("data/sp500_bear_markets.csv")
+bear_table <- local({
+  d <- function(x){ x <- as.Date(x); paste(as.integer(format(x, "%d")), format(x, "%b %Y")) }
+  len <- function(n) if(n < 60) sprintf("%d days", n) else sprintf("%d months", round(n / 30.44))
+  tagList(
+    tags$table(class = "method-table bear-table",
+      tags$thead(tags$tr(tags$th("Peak"), tags$th("Low"), tags$th(class = "num", "Fall"), tags$th(class = "num", "Length"))),
+      tags$tbody(lapply(seq_len(nrow(bears)), function(i) tags$tr(
+        tags$td(d(bears$peak_date[i])), tags$td(d(bears$trough_date[i])),
+        tags$td(class = "num", fmt_pct(bears$percent_loss[i] / 100, 1)),
+        tags$td(class = "num", len(bears$days[i])))))),
+    tags$p(class = "bear-notes",
+      "Falls of 20% or more in the S&P 500 price index, peak to low at daily closes. ",
+      "1929\u201332 counts as several bear markets because the rallies in between rose more than 20%: from the September 1929 peak to the June 1932 low the S&P 500 fell 86%, and the Dow Jones Industrial Average 89%. ",
+      "Since this list was published, the S&P 500's largest fall was about 19% (19 February to 8 April 2025), just short of a bear market. ",
+      "Source: Yardeni Research, ",
+      tags$a(href = "https://old.yardeni.com/wp-content/uploads/BullBearTables.pdf", target = "_blank", rel = "noopener", "Stock Market Historical Tables: Bull & Bear Markets"),
+      " (January 2024), from Standard & Poor's data."))
+})
+
 #######################################################
 # valuation: CAPE each December and the US share return (with dividends)
 # over the following 10 years
@@ -791,7 +813,8 @@ sources <- list(au = list(
   list("Brailsford et al. (2012)", "https://research.bond.edu.au/en/publications/the-historical-equity-risk-premium-in-australia-post-gfc-and-128-")),
   us = list(
   list("Robert J. Shiller, Online Data", "https://shillerdata.com/"),
-  list("Aswath Damodaran, NYU Stern", "https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histret.html")))
+  list("Aswath Damodaran, NYU Stern", "https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histret.html"),
+  list("Yardeni Research (bear markets)", "https://old.yardeni.com/wp-content/uploads/BullBearTables.pdf")))
 source_links <- function(x) tagList(lapply(seq_along(x), function(i){
   tagList(if(i > 1) " \u00b7 ",
           tags$a(href = x[[i]][[2]], target = "_blank", rel = "noopener", x[[i]][[1]]))
@@ -949,6 +972,10 @@ details.how li::marker { color: var(--ink-3); }
 .method-table { width: 100%; font-size: .86rem; margin: 4px 0 14px; font-variant-numeric: tabular-nums; }
 .method-table th { font-weight: 600; color: var(--ink); border-bottom: 1px solid var(--line); padding: 4px 10px 4px 0; }
 .method-table td { border-bottom: 1px solid var(--line); padding: 4px 10px 4px 0; vertical-align: top; }
+details.bears { margin-top: 8px; }
+.bear-table { width: auto; min-width: min(100%, 460px); margin-top: 10px; }
+.bear-table .num { text-align: right; }
+.bear-notes { max-width: 680px; color: var(--ink-3); font-size: .8rem; line-height: 1.55; }
 .modal-footer { border-top-color: var(--line); }
 
 @media (max-width: 640px) {
@@ -1192,7 +1219,12 @@ $(document).on('change', '#view input', function(){ var l = document.querySelect
               div(conditionalPanel("['rolling', 'falls', 'calc', 'value'].indexOf(input.view) >= 0",
                                    tags$details(class = "how",
                                                 tags$summary("How to read this chart"),
-                                                uiOutput("how_to")))),
+                                                uiOutput("how_to"))),
+                  conditionalPanel("input.view == 'falls' && input.country == 'us'",
+                                   tags$details(class = "how bears",
+                                                tags$summary(sprintf("Bear markets at daily closes: %d S&P 500 falls of 20%% or more since 1928",
+                                                                     nrow(bears))),
+                                                bear_table))),
               downloadButton("download", "Download data (CSV)", class = "btn-quiet"))),
       
       div(class = "app-footer",

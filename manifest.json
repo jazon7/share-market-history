@@ -1267,10 +1267,13 @@
       "checksum": "f04933d3882ffba296723c2605845098"
     },
     "app.R": {
-      "checksum": "0274e67bb8aaa114c80a555d93dc32ed"
+      "checksum": "35fbdb65b2f5fe6e1b792b41b9e20b9e"
     },
     "data/australianstockmarket.RDS": {
       "checksum": "8aef7afe2abdd6f8741b0311f1c0863a"
+    },
+    "data/sp500_bear_markets.csv": {
+      "checksum": "50b92290dd8bff410642e93bd1e15e7b"
     },
     "data/usmonthly.RDS": {
       "checksum": "31e6adfa10b185e76956da4ac467d27e"
