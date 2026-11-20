@@ -7,6 +7,8 @@
 #   D    dividends, annual rate
 #   CPI  consumer prices
 #   GS10 10-year government bond yield
+#   CAPE cyclically adjusted P/E: price over the 10-year average of
+#        inflation-adjusted earnings (used by the "Valuation" tab)
 #
 # Indices (all 100 in December 1882)
 # - price: P
@@ -16,6 +18,7 @@
 # - bonds: the previous month's 10-year yield earned for the month (yield/12),
 #          the monthly version of the annual series' yield-as-return
 # - cpi:   consumer prices, to deflate the others
+# - cape:  Shiller's CAPE as published (blank where he has none)
 #
 # Monthly averages catch most of a fall that recovers within a year (1987,
 # 2020), but not the single worst day.
@@ -33,7 +36,8 @@ url <- if(length(link)) paste0("https:", link) else "http://www.econ.yale.edu/~s
 download.file(url, f, mode = "wb", quiet = TRUE, headers = c("User-Agent" = "Mozilla/5.0"))
 
 x <- readxl::read_excel(f, sheet = "Data", skip = 7, col_types = "text", .name_repair = "unique_quiet")
-m <- tibble(date = num(x$Date), P = num(x$P), D = num(x$D), CPI = num(x$CPI), GS10 = num(x$`Rate GS10`)) %>%
+m <- tibble(date = num(x$Date), P = num(x$P), D = num(x$D), CPI = num(x$CPI), GS10 = num(x$`Rate GS10`),
+            CAPE = num(x$CAPE)) %>%
   filter(!is.na(date), !is.na(P), !is.na(CPI)) %>%
   mutate(year = as.integer(floor(date)), month = as.integer(round((date - year) * 100))) %>%
   arrange(year, month) %>%
@@ -48,8 +52,9 @@ monthly <- m %>%
   mutate(price = 100 * P / P[1],
          tr    = growth((P + D / 12) / lag(P)),
          bonds = growth(1 + lag(GS10) / 1200),
-         cpi   = 100 * CPI / CPI[1]) %>%
-  select(year, month, price, tr, bonds, cpi) %>%
+         cpi   = 100 * CPI / CPI[1],
+         cape  = CAPE) %>%
+  select(year, month, price, tr, bonds, cpi, cape) %>%
   as.data.frame()
 
 saveRDS(monthly, "data/usmonthly.RDS")

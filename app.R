@@ -690,6 +690,69 @@ monthly_index <- function(m, real){
 }
 us_falls_index <- list(nom = monthly_index(us_monthly, FALSE), real = monthly_index(us_monthly, TRUE))
 
+#######################################################
+# valuation: CAPE each December and the US share return (with dividends)
+# over the following 10 years
+#######################################################
+us_cape <- us_monthly[us_monthly$month == 12 & !is.na(us_monthly$cape), c("year", "cape")]
+value_horizon <- 10
+value_data <- function(real){
+  idx <- (if(real) markets$us$index_real else markets$us$index_nom)
+  idx <- idx[idx$market == "Stock Price + Div", ]; idx <- idx[order(idx$year), ]
+  h <- value_horizon
+  fwd <- c((idx$dollars[-(1:h)] / idx$dollars[1:(nrow(idx) - h)])^(1 / h) - 1, rep(NA, h))
+  merge(us_cape, data.frame(year = idx$year, fwd = fwd), by = "year")
+}
+# fifths of the Decembers that have a full 10 years after them, by CAPE
+value_fifths <- function(d){
+  d <- d[!is.na(d$fwd), ]
+  br <- quantile(d$cape, 0:5 / 5)
+  d$q <- cut(d$cape, br, include.lowest = TRUE, labels = FALSE)
+  do.call(rbind, lapply(1:5, function(i){
+    s <- d[d$q == i, ]
+    data.frame(q = i, lo = br[i], hi = br[i + 1], n = nrow(s), med = median(s$fwd),
+               worst = min(s$fwd), best = max(s$fwd))
+  }))
+}
+value_plot <- function(d, fifths, theme = "light"){
+  ink <- inks[[theme]]; col <- series_colours(theme)[[series$label[1]]]
+  pts <- d[!is.na(d$fwd), ]; now <- d[nrow(d), ]
+  tick_font <- list(size = 11.5, color = ink$muted)
+  p <- list(data = list()) %>%
+    fig_trace(pts$cape, pts$fwd, type = "scatter", mode = "markers",
+              customdata = I(sprintf("End of %d to end of %d", pts$year, pts$year + value_horizon)),
+              marker = list(color = fade(col, .5), size = 8, line = list(color = col, width = 1)),
+              hovertemplate = "%{customdata}<br>CAPE at the start: %{x:.1f}<br>Return: %{y:.1%} a year<extra></extra>")
+  for(i in seq_len(nrow(fifths))) p <- p %>%
+    fig_trace(c(fifths$lo[i], fifths$hi[i]), rep(fifths$med[i], 2), type = "scatter", mode = "lines",
+              line = list(color = ink$primary, width = 2.5), hoverinfo = "skip")
+  ys <- range(c(pts$fwd, 0)); pad <- diff(ys) * 0.08
+  notes <- c(
+    lapply(seq_len(nrow(fifths)), function(i) list(
+      x = (fifths$lo[i] + fifths$hi[i]) / 2, y = fifths$med[i], yshift = 11, showarrow = FALSE,
+      text = sprintf("%.1f%%", 100 * fifths$med[i]), font = list(size = 11.5, color = ink$primary))),
+    list(list(x = now$cape, y = 1, yref = "paper", yanchor = "bottom", xanchor = "right", xshift = -4,
+              showarrow = FALSE, text = sprintf("Now: %.1f (Dec %d)", now$cape, now$year),
+              font = list(size = 11.5, color = ink$secondary))))
+  p %>% fig_layout(
+    font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", color = ink$primary),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)", showlegend = FALSE,
+    hovermode = "closest",
+    margin = list(t = 26, r = 16, b = 52, l = 52),
+    xaxis = list(title = list(text = "CAPE at the start (price \u00f7 10-year average earnings)", font = list(size = 12, color = ink$muted)),
+                 range = c(0, max(d$cape) * 1.04), tickfont = tick_font, showgrid = FALSE, zeroline = FALSE,
+                 showline = TRUE, linecolor = ink$axis, ticks = "outside", ticklen = 4, tickcolor = ink$axis,
+                 fixedrange = TRUE),
+    yaxis = list(title = list(text = "Average yearly return, next 10 years", font = list(size = 12, color = ink$muted)),
+                 range = c(ys[1] - pad, ys[2] + pad), tickformat = ".0%", tickfont = tick_font,
+                 gridcolor = ink$grid, zeroline = FALSE, showline = FALSE, ticks = "", fixedrange = TRUE),
+    shapes = list(
+      list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = 0, y1 = 0, layer = "below", line = list(color = ink$zero, width = 1)),
+      list(type = "line", x0 = now$cape, x1 = now$cape, yref = "paper", y0 = 0, y1 = 1,
+           line = list(color = ink$secondary, width = 1.2, dash = "dot"))),
+    annotations = notes)
+}
+
 
 
 
@@ -815,6 +878,7 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .series-card .lbl-short { display: none; }
 .series-card .ctx { color: var(--ink-3); font-size: .78rem; margin-top: 4px; line-height: 1.4; }
 .series-card .ctx:empty { display: none; }
+.series-card .ctx-line { display: block; margin-top: 2px; }
 .series-card .flag { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--line-2); border-radius: 3px; color: var(--ink); font-size: .68rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
 .stats-note { color: var(--ink-3); font-size: .8rem; margin: 10px 0 18px; }
 /* dividend calculator */
@@ -1069,10 +1133,11 @@ ui <- page(
               div(class = "chart-bar-left",
                   segmented("view",
                             c("Growth of $100" = "growth",
-                              "Annual returns" = "annual",
-                              "Rolling returns" = "rolling",
-                              "Falls & recoveries" = "falls",
-                              "Dividend calculator" = "calc"),
+                              "Annual" = "annual",
+                              "Rolling" = "rolling",
+                              "Falls" = "falls",
+                              "Dividends" = "calc",
+                              "Valuation" = "value"),
                             selected = "growth"),
                   conditionalPanel("input.view == 'rolling'", class = "window",
                                    selectInput("window", "Window",
@@ -1098,12 +1163,13 @@ ui <- page(
                            year_presets())),
 
           uiOutput("chart_title"),
-          conditionalPanel("input.view != 'calc'", series_toggles("show")),
+          conditionalPanel("['calc', 'value'].indexOf(input.view) < 0", series_toggles("show")),
           conditionalPanel("input.view == 'calc'", uiOutput("calc_cards")),
+          conditionalPanel("input.view == 'value'", uiOutput("value_cards")),
           uiOutput("stats_note"),
           
           # years: current range and quick picks; the slider under the chart does any range
-          conditionalPanel("input.view != 'calc'", div(class = "period",
+          conditionalPanel("['calc', 'value'].indexOf(input.view) < 0", div(class = "period",
                            span(class = "period-label", "Years"),
                            span(id = "years-range", class = "period-range", paste0(min_yr, "\u2013", max_yr)),
                            year_presets(),
@@ -1113,6 +1179,7 @@ ui <- page(
           # tell the server about phone widths (fewer event notes on the growth chart)
           tags$script(HTML("$(document).on('shiny:connected', function(){ Shiny.setInputValue('narrow', window.innerWidth < 640); });
 " , years_js, "
+$(document).on('change', '#view input', function(){ $('.years').toggle(this.value !== 'value'); });
 $(document).on('change', '#view input', function(){ var l = document.querySelector('label[for=' + this.id + ']'); if(l) l.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'smooth'}); });")),
           
           div(class = "years",
@@ -1122,7 +1189,7 @@ $(document).on('change', '#view input', function(){ var l = document.querySelect
                           sep = "", ticks = FALSE, width = "100%")),
           
           div(class = "chart-foot",
-              div(conditionalPanel("['rolling', 'falls', 'calc'].indexOf(input.view) >= 0",
+              div(conditionalPanel("['rolling', 'falls', 'calc', 'value'].indexOf(input.view) >= 0",
                                    tags$details(class = "how",
                                                 tags$summary("How to read this chart"),
                                                 uiOutput("how_to")))),
@@ -1235,14 +1302,20 @@ server <- function(input, output, session) {
   # among all k-year periods in the full history
   rolling_ctx <- reactive({
     df <- rolling_full_df(); y1 <- input$years[2]; k <- as.numeric(input$window)
+    idx <- if(real()) mk()$index_real else mk()$index_nom
     lapply(setNames(seq_len(nrow(series)), series$key), function(i){
       h <- df[df$market == series$market[i] & !is.na(df$percent), ]
+      d <- idx[idx$market == series$market[i], ]; d <- d[order(d$year), ]
+      n_yrs <- d$year[nrow(d)] - d$year[1]
       v <- h$percent[h$year == y1]
       v <- if(length(v)) v else NA
       list(value = v, k = k, y1 = y1,
            pct_below = if(is.na(v)) NA else mean(h$percent < v),
            lo = unname(quantile(h$percent, .1)), hi = unname(quantile(h$percent, .9)),
-           med = median(h$percent), first = min(h$year), n = nrow(h))
+           med = median(h$percent), first = min(h$year), n = nrow(h),
+           # compound growth over the whole history, which long periods settle towards
+           cagr = (d$dollars[nrow(d)] / d$dollars[1])^(1 / n_yrs) - 1,
+           span = c(d$year[1], d$year[nrow(d)]))
     })
   })
   
@@ -1255,7 +1328,9 @@ server <- function(input, output, session) {
         list(value = sprintf("%.1f%%", 100 * c$value),
              rate = sprintf("a year, %d–%d", c$y1 - c$k + 1, c$y1),
              ctx = tagList(sprintf("Higher than %d%% of %d-year periods", p, c$k),
-                           if(!is.null(flag)) span(class = "flag", flag)))
+                           if(!is.null(flag)) span(class = "flag", flag),
+                           span(class = "ctx-line", sprintf("Median %.1f%% \u00b7 %d\u2013%d: %.1f%% a year",
+                                                            100 * c$med, c$span[1], c$span[2], 100 * c$cagr))))
       }))
     }
     if(identical(input$view, "falls")){
@@ -1290,9 +1365,37 @@ server <- function(input, output, session) {
     outputOptions(output, paste0("ctx_", k), suspendWhenHidden = FALSE)
   })
   
+  #### valuation ####
+  value_df <- reactive(value_data(real()))
+  value_q  <- reactive(value_fifths(value_df()))
+  output$value_cards <- renderUI({
+    d <- value_df(); q <- value_q(); now <- d[nrow(d), ]
+    card <- function(name, value, rate, ctx){
+      div(class = "series-card",
+          style = paste0("--cl:", series$colour[1], ";--cd:", series$colour_dark[1]),
+          div(class = "name", span(class = "dot"), span(name)),
+          div(class = "figs", span(class = "value", value), span(class = "rate", rate)),
+          div(class = "ctx", ctx))
+    }
+    fifth <- function(i, name) card(name, sprintf("%.1f%%", 100 * q$med[i]), "a year, median of the next 10 years",
+                                    sprintf("Range %s to %s across %d starting years", fmt_pct(q$worst[i], 1), fmt_pct(q$best[i], 1), q$n[i]))
+    div(class = "series calc",
+        card("CAPE now", sprintf("%.1f", now$cape), sprintf("December %d", now$year),
+             sprintf("Higher than %d%% of Decembers since %d (median %.1f)",
+                     floor(100 * mean(d$cape < now$cape)), d$year[1], median(d$cape))),
+        fifth(5, sprintf("Dearest fifth: CAPE above %.0f", q$lo[5])),
+        fifth(1, sprintf("Cheapest fifth: CAPE below %.0f", q$hi[1])))
+  })
+
   output$stats_note <- renderUI({
     infl <- if(real()) "after inflation" else "before inflation"
-    txt <- if(identical(input$view, "calc")){
+    txt <- if(identical(input$view, "value")){
+      d <- value_df(); s <- d[!is.na(d$fwd), ]
+      paste0(sprintf("US shares with dividends, %s. Starting points from the end of %d to the end of %d; each bar is the median of one fifth of them. ",
+                     infl, min(s$year), max(s$year)),
+             if(country() == "au") "Long-run earnings data isn't available for Australia, so this view uses US shares. " else "",
+             "Hover over a dot for its years.")
+    } else if(identical(input$view, "calc")){
       sprintf("%s invested in %s shares at the end of %s, valued at the end of %s, %s.",
               fmt_amount(amount()), if(country() == "us") "US" else "Australian",
               input$years[1], input$years[2],
@@ -1315,6 +1418,21 @@ server <- function(input, output, session) {
   
   #### rolling: how to read ####
   output$how_to <- renderUI({
+    if(identical(input$view, "value")){
+      d <- value_df(); q <- value_q(); now <- d[nrow(d), ]
+      near <- d[!is.na(d$fwd) & d$cape >= 0.8 * now$cape, ]
+      return(tags$ul(
+        tags$li("CAPE (the cyclically adjusted price-to-earnings ratio, or Shiller P/E) is the share price divided by the average of the last 10 years of company earnings, after inflation. Averaging over a business cycle smooths out booms and recessions, so it measures how expensive shares are against their normal earning power."),
+        tags$li(sprintf("Each dot is one December: the CAPE then (across) and the average yearly return of US shares with dividends over the next %d years (up). The bars are the median return for each fifth of the starting points, cheapest to dearest.", value_horizon)),
+        tags$li(sprintf("Dearer starts have usually been followed by lower returns: a median of %.1f%% a year from the dearest fifth against %.1f%% from the cheapest.",
+                        100 * q$med[5], 100 * q$med[1])),
+        tags$li(sprintf("This is not a forecast. The spread at any CAPE is wide (%s to %s a year from the dearest fifth), neighbouring dots share 9 of their 10 years so the %d dots hold only about %d separate decades, and CAPE has stayed above its long-run median for most of the last 30 years.",
+                        fmt_pct(q$worst[5], 1), fmt_pct(q$best[5], 1), sum(q$n), round(sum(q$n) / value_horizon))),
+        tags$li(if(nrow(near)) sprintf("Today's %.1f is near the top of the range. The only starting points within 20%% of it are %s.",
+                                       now$cape, paste(sprintf("%d (%s a year)", near$year, fmt_pct(near$fwd, 1)), collapse = ", "))
+                else sprintf("Today's %.1f is above every starting point with 10 years of results.", now$cape)),
+        tags$li("CAPE and earnings: Robert J. Shiller, Online Data. Returns: the same US series as the other tabs.")))
+    }
     if(identical(input$view, "calc")) return(tags$ul(
       tags$li("Set the amount and the years in the sentence above the chart, or drag the handles under it. The money goes in at the end of the first year."),
       tags$li("Dividends reinvested follows the total-return index: each dividend buys more shares, which then pay dividends of their own. That snowball is the compounding."),
@@ -1342,6 +1460,8 @@ server <- function(input, output, session) {
       tags$li("Neighbouring points share most of their years, so the line moves in smooth waves. These are not reliable cycles: the same returns shuffled into random order produce similar waves."),
       tags$li(sprintf("Switch to stacked rows, or show a single series, to see the typical range. The shaded band holds the middle 80%% of all %d-year periods since %d: above it are the best 10%%, below it the worst 10%%, and the line inside is the median.",
                       k, first)),
+      tags$li(sprintf("Why the median differs between period lengths: ups and downs drag compound growth below the average year, so a short period's typical return sits nearer a typical single year, and longer periods settle towards the whole-history growth rate shown in the cards (%d\u2013%d). Try the 3-year and 20-year windows to see it.",
+                      rolling_ctx()[[1]]$span[1], rolling_ctx()[[1]]$span[2])),
       tags$li("The cards rank the period ending at the slider's end year against the full history. \u201cHistoric low\u201d and \u201chistoric high\u201d describe the past; they are not forecasts."),
       tags$li("Bonds use each December's 10-year yield as that year's return, so gains or losses from changing interest rates are not included.")
     )
@@ -1352,6 +1472,9 @@ server <- function(input, output, session) {
   output$chart_title <- renderUI({
     real_txt <- if(real()) ", after inflation" else ""
     switch(input$view,
+           value = div(class = "chart-title",
+                       tags$h2(paste0("Valuation and what came next", real_txt)),
+                       tags$p("How expensive US shares were at each year end (CAPE), and the average yearly return over the next 10 years.")),
            calc = div(class = "chart-title",
                       tags$h2(paste0("What ", fmt_amount(amount()), " became, dividends reinvested or taken as cash", real_txt)),
                       tags$p("The lower shading is the dividends paid out; the upper shading is what reinvesting them added.")),
@@ -1383,6 +1506,7 @@ server <- function(input, output, session) {
     keep <- series$market[series$key %in% shown()]
     switch(input$view,
            calc = dividend_plot(calc_df(), yrs, narrow = isTRUE(input$narrow), theme = theme()),
+           value = value_plot(value_df(), value_q(), theme = theme()),
            growth = {
              df <- index_df() %>% filter(market %in% keep)
              line_plot(df %>% mutate(dollars = round(dollars)),
@@ -1461,6 +1585,7 @@ server <- function(input, output, session) {
   #### download: the data behind the current chart ####
   output$download <- downloadHandler(
     filename = function(){
+      if(input$view == "value") return(paste0("us-cape-next-10-years", if(real()) "-real", ".csv"))
       paste0(if(country() == "us") "us" else "australian", "-market-", input$view,
              if(input$view == "rolling") paste0("-", input$window, "yr"),
              if(input$view == "calc") paste0("-", format(amount(), scientific = FALSE)),
@@ -1468,6 +1593,12 @@ server <- function(input, output, session) {
              if(real()) "-real", ".csv")
     },
     content = function(file){
+      if(identical(input$view, "value")){
+        d <- value_df()
+        return(write.csv(data.frame(year = d$year, cape = round(d$cape, 2),
+                                    next_10yr_return = round(d$fwd, 4)),
+                         file, row.names = FALSE, na = ""))
+      }
       if(identical(input$view, "calc")){
         p <- calc_df()
         return(write.csv(data.frame(year = p$year,
