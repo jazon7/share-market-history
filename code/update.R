@@ -125,7 +125,7 @@ if(!nrow(new)){
 
 #### United States: rebuilt automatically from Shiller and Damodaran ####
 # The app shows the years both markets cover, so update the US series too.
-us_ok <- tryCatch({ source("code/us_data.R", local = new.env()); TRUE },
+us_ok <- tryCatch({ source("code/us_data.R", local = new.env()); source("code/us_monthly.R", local = new.env()); TRUE },
                   error = function(e){ cat("US update failed, US data left as it was:", conditionMessage(e), "\n"); FALSE })
 au_last <- max(readRDS(data_file)$year); us_last <- max(readRDS("data/usstockmarket.RDS")$year)
 cat(sprintf("Latest year: Australia %d, United States %d. The app shows up to %d.\n",

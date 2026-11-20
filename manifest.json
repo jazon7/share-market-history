@@ -1264,13 +1264,16 @@
   },
   "files": {
     "about.Rhtml": {
-      "checksum": "7ea4ce20d834d871e563480b01b1db8b"
+      "checksum": "8d14a75bc45056121f864d2e6f001d10"
     },
     "app.R": {
-      "checksum": "9057b11ece2b43eb682be68ada8e7ebc"
+      "checksum": "d69387d3a2cea778e74dd194fb519111"
     },
     "data/australianstockmarket.RDS": {
       "checksum": "8aef7afe2abdd6f8741b0311f1c0863a"
+    },
+    "data/usmonthly.RDS": {
+      "checksum": "60e76b3959c3914cd18bf88005f953e1"
     },
     "data/usstockmarket.RDS": {
       "checksum": "7d19b2d397d9d1d23e53bfdffebfef72"

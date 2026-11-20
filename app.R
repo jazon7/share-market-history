@@ -459,12 +459,48 @@ fade <- function(hex, a){ v <- col2rgb(hex); sprintf("rgba(%d,%d,%d,%.2f)", v[1]
 # worst fall from a previous high: when it peaked, bottomed and recovered
 fall_stats <- function(year, dollars){
   dd <- dollars / cummax(dollars) - 1
-  if(!length(dd) || min(dd) > -1e-9) return(list(worst = 0, now = 0))
+  # a dip that rounds to 0% counts as no fall
+  if(!length(dd) || min(dd) > -0.005) return(list(worst = 0, now = dd[length(dd)]))
   i <- which.min(dd)
   peak_i <- which.max(dollars[seq_len(i)])
   back <- which(dollars >= dollars[peak_i] & seq_along(dollars) > i)[1]
   list(worst = dd[i], peak = year[peak_i], low = year[i],
        back = if(is.na(back)) NA else year[back], now = dd[length(dd)])
+}
+
+# Monthly values (US falls) sit on the same scale as the yearly ones: December
+# of a year is at that year, month m at year - 1 + m/12.
+month_parts <- function(x){
+  k <- round(x * 12); m <- (k - 1) %% 12 + 1
+  list(year = as.integer((k - m) / 12 + 1), month = as.integer(m))
+}
+fmt_when <- function(x, monthly){
+  if(!monthly) return(as.character(x))
+  p <- month_parts(x); paste(month.abb[p$month], p$year)
+}
+fmt_span <- function(d, monthly){
+  if(!monthly) return(sprintf("%d years", d))
+  mo <- round(d * 12)
+  if(mo < 24) sprintf("%d months", mo) else sprintf("%d years", round(mo / 12))
+}
+# switch a finished figure to a date x axis (so hovers read "Jun 1932")
+date_axis <- function(fig){
+  to_date <- function(x){
+    p <- month_parts(unclass(x)); sprintf("%d-%02d-15", p$year, p$month)
+  }
+  is_x <- function(ref) !is.null(ref) && grepl("^x[0-9]*$", ref)
+  fig$data <- lapply(fig$data, function(t){ if(!is.null(t$x)) t$x <- I(to_date(t$x)); t })
+  for(n in grep("^xaxis", names(fig$layout), value = TRUE)){
+    ax <- fig$layout[[n]]
+    ax$type <- "date"; ax$range <- to_date(ax$range); ax$hoverformat <- "%b %Y"
+    ax$tickformat <- NULL; ax$dtick <- NULL
+    fig$layout[[n]] <- ax
+  }
+  fig$layout$annotations <- lapply(fig$layout$annotations, function(a){
+    if(is_x(a$xref)) a$x <- to_date(a$x); a })
+  fig$layout$shapes <- lapply(fig$layout$shapes, function(sh){
+    if(is_x(sh$xref)){ sh$x0 <- to_date(sh$x0); sh$x1 <- to_date(sh$x1) }; sh })
+  fig
 }
 
 # market events marked on the growth chart
@@ -639,6 +675,20 @@ markets <- list(au = prep_market(au_raw, max_yr),
                 us = prep_market(us_raw, max_yr))
 raws <- list(au = au_raw[au_raw$year <= max_yr, ], us = us_raw[us_raw$year <= max_yr, ])
 countries <- c(au = "Australia", us = "United States")
+
+# US monthly indices for the falls tab (built by code/us_monthly.R), to the
+# same last year as the annual data
+us_monthly <- readRDS("data/usmonthly.RDS")
+us_monthly <- us_monthly[us_monthly$year <= max_yr, ]
+monthly_index <- function(m, real){
+  x <- m$year + (m$month - 12) / 12
+  defl <- if(real) m$cpi / 100 else 1
+  lv <- c("Bonds 10yr", "Stock Price + Div", "Stock Price")
+  tibble::tibble(year = rep(x, 3),
+                 market = factor(rep(c("Stock Price + Div", "Stock Price", "Bonds 10yr"), each = length(x)), levels = lv),
+                 dollars = c(m$tr, m$price, m$bonds) / defl)
+}
+us_falls_index <- list(nom = monthly_index(us_monthly, FALSE), real = monthly_index(us_monthly, TRUE))
 
 
 
@@ -1157,8 +1207,15 @@ server <- function(input, output, session) {
   })
 
   # fall below the highest value so far (since the first selected year)
+  # US falls use monthly data; Australia has year-end values only
+  monthly_falls <- reactive(country() == "us")
   falls_df <- reactive({
-    index_df() %>% group_by(market) %>% arrange(year, .by_group = TRUE) %>%
+    req(input$years)
+    src <- if(monthly_falls()){
+      us_falls_index[[if(real()) "real" else "nom"]] %>%
+        filter(year >= input$years[1], year <= input$years[2])
+    } else index_df()
+    src %>% group_by(market) %>% arrange(year, .by_group = TRUE) %>%
       mutate(dd = dollars / cummax(dollars) - 1) %>% ungroup()
   })
   falls_stats <- reactive({
@@ -1205,10 +1262,11 @@ server <- function(input, output, session) {
       return(lapply(falls_stats(), function(f){
         if(f$worst == 0) return(list(value = "None", rate = "never below an earlier high",
                                      ctx = NULL))
+        mo <- monthly_falls()
         list(value = fmt_pct(f$worst),
-             rate = sprintf("%d peak to %d low", f$peak, f$low),
+             rate = sprintf("%s peak to %s low", fmt_when(f$peak, mo), fmt_when(f$low, mo)),
              ctx = tagList(if(is.na(f$back)) "Not yet back above that peak"
-                           else sprintf("Back above the peak by %d, %d years after it", f$back, f$back - f$peak),
+                           else sprintf("Back above the peak by %s, %s after it", fmt_when(f$back, mo), fmt_span(f$back - f$peak, mo)),
                            if(f$now < -0.05) span(class = "flag", sprintf("%s below peak now", fmt_pct(f$now)))))
       }))
     }
@@ -1240,8 +1298,8 @@ server <- function(input, output, session) {
               input$years[1], input$years[2],
               if(real()) paste0("after inflation (", input$years[1], " dollars)") else "before inflation")
     } else if(identical(input$view, "falls")){
-      sprintf("Each year-end value against the highest value since %s, %s. Click a series to show or hide it.",
-              input$years[1], infl)
+      sprintf("Each %s against the highest value since the end of %s, %s. Click a series to show or hide it.",
+              if(monthly_falls()) "month's value" else "year-end value", input$years[1], infl)
     } else if(identical(input$view, "rolling")){
       first <- min(sapply(rolling_ctx(), `[[`, "first"))
       sprintf("Average yearly return over the %s years to %s, %s, ranked against every %s-year period since %s. Click a series to show or hide it.",
@@ -1268,10 +1326,14 @@ server <- function(input, output, session) {
               tags$a(href = "#", onclick = "$(document).one('shown.bs.modal', function(){ var s = document.getElementById('dividend-method'); if(s) s.scrollIntoView({block: 'start'}); }); document.getElementById('about').click(); return false;",
                      "About the data"), ".")))))
     if(identical(input$view, "falls")) return(tags$ul(
-      tags$li("Each point shows how far the value sat below its highest year-end value so far. Zero means a new high."),
-      tags$li("Values are at year end, so falls and rebounds within a year (such as October 1987) don't show in full."),
+      tags$li("Each point shows how far the value sat below its highest value so far. Zero means a new high."),
+      if(monthly_falls())
+        tags$li("US values are monthly: each month's average of daily closes (Shiller's data). Falls that recover within a year, such as 1987 and 2020, show, but the single worst days don't: in 2020 the S&P 500 fell 34% from its February high to its 23 March close, about 19% month to month.")
+      else
+        tags$li("Australian values are at year end, so falls and rebounds within a year (such as October 1987) don't show in full. Monthly history isn't available for Australia; the US version of this chart is monthly."),
       tags$li("The cards give the worst fall in the selected years, the years of the peak and the low, and when the earlier peak was regained."),
-      tags$li("Bonds use each December's 10-year yield as that year's return, so before inflation they never fall. Turn on inflation to see losses of buying power.")))
+      tags$li(if(monthly_falls()) "Bonds earn the 10-year yield each month, so before inflation they never fall. Turn on inflation to see losses of buying power."
+              else "Bonds use each December's 10-year yield as that year's return, so before inflation they never fall. Turn on inflation to see losses of buying power.")))
     k <- as.numeric(input$window); y1 <- input$years[2]
     first <- min(sapply(rolling_ctx(), `[[`, "first"))
     tags$ul(
@@ -1351,7 +1413,7 @@ server <- function(input, output, session) {
            },
            falls = {
              df <- falls_df() %>% filter(market %in% keep)
-             if(stacked() && length(keep) > 1){
+             fig <- if(stacked() && length(keep) > 1){
                ref <- lapply(setNames(series$key, series$label), function(k){
                  f <- falls_stats()[[k]]
                  if(f$worst == 0) NULL else list(y = f$worst, text = paste("worst", fmt_pct(f$worst)))
@@ -1364,6 +1426,7 @@ server <- function(input, output, session) {
                          y_range = c(lo * 1.04, -lo * 0.07),    # headroom above 0 for the note
                          hline = 0, zero_label = "New high", theme = theme())
              }
+             if(monthly_falls()) date_axis(fig) else fig
            },
            rolling = {
              # one series has nothing to stack: use the fully labelled single chart
@@ -1414,7 +1477,8 @@ server <- function(input, output, session) {
                          file, row.names = FALSE))
       }
       df <- switch(input$view,
-                   falls   = falls_df() %>% mutate(value = dd),
+                   falls   = falls_df() %>% mutate(value = dd,
+                                                   year = if(monthly_falls()) { p <- month_parts(year); sprintf("%d-%02d", p$year, p$month) } else year),
                    growth  = index_df() %>% mutate(value = round(dollars, 2)),
                    annual  = returns_df() %>% mutate(value = percent_yoy),
                    rolling = rolling_df() %>% mutate(value = percent))
@@ -1425,6 +1489,7 @@ server <- function(input, output, session) {
         arrange(label) %>%
         pivot_wider(names_from = label, values_from = value) %>%
         arrange(year) %>%
+        { if(identical(input$view, "falls") && monthly_falls()) rename(., month = year) else . } %>%
         write.csv(file, row.names = FALSE, na = "")
     })
 
