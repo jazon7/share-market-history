@@ -22,8 +22,10 @@
 #   (downloaded automatically). Years before 2025 used the December quarter.
 # - Checks that the stored December averages still reproduce the shares
 #   returns already in the dataset before adding anything.
-# - Then rebuilds the US series (code/us_data.R, fully automatic), since the
-#   app shows only the years both markets cover.
+# - Then rebuilds the US series, fully automatic, since the app shows only the
+#   years both markets cover: annual (code/us_data.R), monthly for the falls
+#   chart and CAPE (code/us_monthly.R), daily for the worst falls
+#   (code/us_daily.R).
 #######################################################
 suppressMessages(library(dplyr))
 
@@ -125,7 +127,7 @@ if(!nrow(new)){
 
 #### United States: rebuilt automatically from Shiller and Damodaran ####
 # The app shows the years both markets cover, so update the US series too.
-us_ok <- tryCatch({ source("code/us_data.R", local = new.env()); source("code/us_monthly.R", local = new.env()); TRUE },
+us_ok <- tryCatch({ source("code/us_data.R", local = new.env()); source("code/us_monthly.R", local = new.env()); source("code/us_daily.R", local = new.env()); TRUE },
                   error = function(e){ cat("US update failed, US data left as it was:", conditionMessage(e), "\n"); FALSE })
 au_last <- max(readRDS(data_file)$year); us_last <- max(readRDS("data/usstockmarket.RDS")$year)
 cat(sprintf("Latest year: Australia %d, United States %d. The app shows up to %d.\n",

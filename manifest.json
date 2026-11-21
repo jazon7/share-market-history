@@ -1264,10 +1264,10 @@
   },
   "files": {
     "about.Rhtml": {
-      "checksum": "f04933d3882ffba296723c2605845098"
+      "checksum": "6dbb1aa5a545c073c5218c541f5ca054"
     },
     "app.R": {
-      "checksum": "e7b0ae805555b9351b2c443d4e6ddd31"
+      "checksum": "aef61c973d711c971ffd579650b8f1b2"
     },
     "data/australianstockmarket.RDS": {
       "checksum": "8aef7afe2abdd6f8741b0311f1c0863a"
@@ -1275,14 +1275,17 @@
     "data/sp500_bear_markets.csv": {
       "checksum": "50b92290dd8bff410642e93bd1e15e7b"
     },
+    "data/usdaily.RDS": {
+      "checksum": "6a7c66b4ec04d8b2197fc3b2aaa49152"
+    },
     "data/usmonthly.RDS": {
       "checksum": "31e6adfa10b185e76956da4ac467d27e"
     },
     "data/usstockmarket.RDS": {
       "checksum": "7d19b2d397d9d1d23e53bfdffebfef72"
     },
-    "www/plotly-2.25.2.min.js": {
-      "checksum": "154690fd3da83096a8857f0d84f0a1af"
+    "www/plotly-basic-2.25.2.min.js": {
+      "checksum": "95b8e9cd9f459903941d50f156346057"
     },
     "www/plotly-LICENSE.txt": {
       "checksum": "6f795602ad21fc98c67427e0b8255549"

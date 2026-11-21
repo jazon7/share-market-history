@@ -1,0 +1,48 @@
+# Refresh the US monthly data (Shiller: prices, dividends, CPI, bond yields,
+# CAPE) once a month, so the Valuation tab shows the latest CAPE. Commits only
+# when the data changed; Posit Connect Cloud republishes on the push.
+#
+# The yearly update (code/update.R, which needs the manual S&P export for
+# Australia) still rebuilds everything else.
+name: Monthly US data refresh
+
+on:
+  schedule:
+    - cron: "0 6 5 * *"      # 06:00 UTC on the 5th of each month
+  workflow_dispatch:          # or run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true   # prebuilt package binaries: quick installs
+
+      - name: Install R packages
+        run: Rscript -e 'install.packages(c("dplyr", "readxl", "tidyr"))'
+
+      - name: Rebuild data/usmonthly.RDS from Shiller's data
+        run: Rscript code/us_monthly.R
+
+      - name: Commit and push if the data changed
+        run: |
+          if git diff --quiet -- data/usmonthly.RDS; then
+            echo "No change in the US monthly data."
+            exit 0
+          fi
+          # keep manifest.json's checksum for the file in step
+          sum=$(md5sum data/usmonthly.RDS | cut -d' ' -f1)
+          jq --arg s "$sum" '.files["data/usmonthly.RDS"].checksum = $s' manifest.json > manifest.tmp
+          mv manifest.tmp manifest.json
+          latest=$(Rscript -e 'm <- readRDS("data/usmonthly.RDS"); m <- m[!is.na(m$cape), ]; m <- m[nrow(m), ]; cat(sprintf("%s %d, CAPE %.1f", month.name[m$month], m$year, m$cape))')
+          git config user.name "jazon7"
+          git config user.email "67318977+jazon7@users.noreply.github.com"
+          git add data/usmonthly.RDS manifest.json
+          git commit -m "Monthly US data refresh: latest $latest"
+          git push

@@ -283,7 +283,7 @@ stacked_plot <- function(df, y_col, x_range,
   n <- length(labs)
   
   # one shared scale: data plus any bands, padded
-  y_all <- c(df$y, unlist(lapply(bands, function(b) c(b$lo, b$hi))), 0)
+  y_all <- c(df$y, unlist(lapply(bands, function(b) c(b$lo, b$hi))), unlist(lapply(ref, `[[`, "y")), 0)
   y_rng <- range(y_all, na.rm = TRUE); pad <- diff(y_rng) * 0.08
   y_rng <- y_rng + c(-pad, pad)
   tick_font <- list(size = 11.5, color = ink$muted)
@@ -690,6 +690,29 @@ monthly_index <- function(m, real){
 }
 us_falls_index <- list(nom = monthly_index(us_monthly, FALSE), real = monthly_index(us_monthly, TRUE))
 
+# US shares with dividends at daily closes from July 1926 (code/us_daily.R,
+# Kenneth R. French Data Library), monthly before that: used for the worst-fall
+# figures on the falls cards, which the monthly chart line would understate.
+# x is on the same year scale as the chart (31 December of a year = that year).
+us_daily <- readRDS("data/usdaily.RDS")
+daily_start <- min(us_daily$date)
+us_daily <- us_daily[us_daily$date <= as.Date(sprintf("%d-12-31", max_yr)), ]
+us_div_exact <- local({
+  m <- us_monthly[us_monthly$year * 100 + us_monthly$month < as.integer(format(daily_start, "%Y%m")), ]
+  yr <- as.integer(format(us_daily$date, "%Y"))
+  doy <- as.integer(format(us_daily$date, "%j"))
+  len <- ifelse((yr %% 4 == 0 & yr %% 100 != 0) | yr %% 400 == 0, 366, 365)
+  d <- data.frame(x = c(m$year - 1 + m$month / 12, yr - 1 + doy / len),
+                  date = c(as.Date(sprintf("%d-%02d-15", m$year, m$month)), us_daily$date),
+                  dollars = c(m$tr, m$tr[nrow(m)] * us_daily$tr / 100))   # joined at June 1926
+  # after inflation: each day deflated by its month's CPI
+  cpi <- us_monthly$cpi[match(format(d$date, "%Y%m"), sprintf("%d%02d", us_monthly$year, us_monthly$month))]
+  stopifnot(!anyNA(cpi))
+  list(nom = d, real = transform(d, dollars = dollars / (cpi / 100)))
+})
+# "3 Sep 1929" for daily dates, "Oct 1907" for the monthly years before
+fmt_day <- function(d) if(d >= daily_start) paste(as.integer(format(d, "%d")), format(d, "%b %Y")) else format(d, "%b %Y")
+
 # S&P 500 bear markets at daily closes (Yardeni Research, from S&P data):
 # shown under the US falls chart, since monthly averages smooth the worst days
 bears <- read.csv("data/sp500_bear_markets.csv")
@@ -717,6 +740,12 @@ bear_table <- local({
 # over the following 10 years
 #######################################################
 us_cape <- us_monthly[us_monthly$month == 12 & !is.na(us_monthly$cape), c("year", "cape")]
+# today's CAPE: the latest month in Shiller's data, which runs past the last
+# complete year (the dots stay at year ends)
+cape_now <- local({
+  m <- readRDS("data/usmonthly.RDS"); m <- m[!is.na(m$cape), ]; m <- m[nrow(m), ]
+  list(cape = m$cape, year = m$year, month = m$month, when = paste(month.name[m$month], m$year))
+})
 value_horizon <- 10
 value_data <- function(real){
   idx <- (if(real) markets$us$index_real else markets$us$index_nom)
@@ -738,13 +767,21 @@ value_fifths <- function(d){
 }
 value_plot <- function(d, fifths, theme = "light"){
   ink <- inks[[theme]]; col <- series_colours(theme)[[series$label[1]]]
-  pts <- d[!is.na(d$fwd), ]; now <- d[nrow(d), ]
+  accent <- series_colours(theme)[[series$label[2]]]          # today, and the starts most like it
+  pts <- d[!is.na(d$fwd), ]; now <- cape_now
+  near <- pts[pts$cape >= 0.8 * now$cape, ]                     # within 20% of today's CAPE
+  hov <- "%{customdata}<br>CAPE at the start: %{x:.1f}<br>Return: %{y:.1%} a year<extra></extra>"
   tick_font <- list(size = 11.5, color = ink$muted)
   p <- list(data = list()) %>%
     fig_trace(pts$cape, pts$fwd, type = "scatter", mode = "markers",
               customdata = I(sprintf("End of %d to end of %d", pts$year, pts$year + value_horizon)),
               marker = list(color = fade(col, .5), size = 8, line = list(color = col, width = 1)),
-              hovertemplate = "%{customdata}<br>CAPE at the start: %{x:.1f}<br>Return: %{y:.1%} a year<extra></extra>")
+              hovertemplate = hov)
+  if(nrow(near)) p <- p %>%
+    fig_trace(near$cape, near$fwd, type = "scatter", mode = "markers",
+              customdata = I(sprintf("End of %d to end of %d", near$year, near$year + value_horizon)),
+              marker = list(color = accent, size = 10, line = list(color = ink$page, width = 1.5)),
+              hovertemplate = hov)
   for(i in seq_len(nrow(fifths))) p <- p %>%
     fig_trace(c(fifths$lo[i], fifths$hi[i]), rep(fifths$med[i], 2), type = "scatter", mode = "lines",
               line = list(color = ink$primary, width = 2.5), hoverinfo = "skip")
@@ -753,14 +790,20 @@ value_plot <- function(d, fifths, theme = "light"){
     lapply(seq_len(nrow(fifths)), function(i) list(
       x = (fifths$lo[i] + fifths$hi[i]) / 2, y = fifths$med[i], yshift = 11, showarrow = FALSE,
       text = sprintf("%.1f%%", 100 * fifths$med[i]), font = list(size = 11.5, color = ink$primary))),
-    list(list(x = now$cape, y = 1, yref = "paper", yanchor = "bottom", xanchor = "right", xshift = -4,
-              showarrow = FALSE, text = sprintf("Now: %.1f (Dec %d)", now$cape, now$year),
-              font = list(size = 11.5, color = ink$secondary))))
+    list(list(x = now$cape, y = 1, yref = "paper", yanchor = "bottom", xanchor = "right", xshift = -6,
+              showarrow = FALSE, align = "right",
+              text = paste0(sprintf("<b>Today: CAPE %.1f</b> (%s)", now$cape, now$when),
+                            if(nrow(near)) sprintf("<br>\u25cf Closest past starts (%s): %s to %s a year",
+                                                   if(nrow(near) > 1) paste(range(near$year), collapse = "\u2013") else near$year,
+                                                   fmt_pct(min(near$fwd), 1), fmt_pct(max(near$fwd), 1)),
+                            sprintf("<br><span style='color:%s'>No dot for today yet: its 10 years end in %s %d</span>",
+                                    ink$muted, month.name[now$month], now$year + value_horizon)),
+              font = list(size = 12, color = accent))))
   p %>% fig_layout(
     font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", color = ink$primary),
     paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)", showlegend = FALSE,
     hovermode = "closest",
-    margin = list(t = 26, r = 16, b = 52, l = 52),
+    margin = list(t = 62, r = 16, b = 52, l = 52),
     xaxis = list(title = list(text = "CAPE at the start (price \u00f7 10-year average earnings)", font = list(size = 12, color = ink$muted)),
                  range = c(0, max(d$cape) * 1.04), tickfont = tick_font, showgrid = FALSE, zeroline = FALSE,
                  showline = TRUE, linecolor = ink$axis, ticks = "outside", ticklen = 4, tickcolor = ink$axis,
@@ -771,7 +814,7 @@ value_plot <- function(d, fifths, theme = "light"){
     shapes = list(
       list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = 0, y1 = 0, layer = "below", line = list(color = ink$zero, width = 1)),
       list(type = "line", x0 = now$cape, x1 = now$cape, yref = "paper", y0 = 0, y1 = 1,
-           line = list(color = ink$secondary, width = 1.2, dash = "dot"))),
+           line = list(color = accent, width = 2))),
     annotations = notes)
 }
 
@@ -814,6 +857,7 @@ sources <- list(au = list(
   us = list(
   list("Robert J. Shiller, Online Data", "https://shillerdata.com/"),
   list("Aswath Damodaran, NYU Stern", "https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/histret.html"),
+  list("Kenneth R. French Data Library", "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html"),
   list("Yardeni Research (bear markets)", "https://old.yardeni.com/wp-content/uploads/BullBearTables.pdf")))
 source_links <- function(x) tagList(lapply(seq_along(x), function(i){
   tagList(if(i > 1) " \u00b7 ",
@@ -1130,7 +1174,7 @@ ui <- page(
   title = "Australian & US Stock Markets",
   tags$head(tags$style(HTML(app_css)),
             # plotly.js, shipped with the app (MIT licence: www/plotly-LICENSE.txt)
-            tags$script(src = "plotly-2.25.2.min.js"),
+            tags$script(src = "plotly-basic-2.25.2.min.js"),
             # output binding for figureOutput(): update the chart in place
             tags$script(HTML("
 (function(){
@@ -1326,9 +1370,15 @@ server <- function(input, output, session) {
   })
   falls_stats <- reactive({
     df <- falls_df()
-    lapply(setNames(series$market, series$key), function(m){
+    out <- lapply(setNames(series$market, series$key), function(m){
       d <- df[df$market == m, ]; fall_stats(d$year, d$dollars)
     })
+    if(monthly_falls()){
+      d <- us_div_exact[[if(real()) "real" else "nom"]]
+      d <- d[d$x >= input$years[1] & d$x <= input$years[2], ]
+      out$div <- c(fall_stats(d$date, d$dollars), exact = TRUE)
+    }
+    out
   })
   
   #### headline figures in the series cards ####
@@ -1376,11 +1426,15 @@ server <- function(input, output, session) {
       return(lapply(falls_stats(), function(f){
         if(f$worst == 0) return(list(value = "None", rate = "never below an earlier high",
                                      ctx = NULL))
-        mo <- monthly_falls()
+        mo <- monthly_falls(); exact <- isTRUE(f$exact)
+        when <- function(x) if(exact) fmt_day(x) else fmt_when(x, mo)
+        gap  <- function(a, b) if(exact) fmt_span(as.numeric(b - a) / 365.25, TRUE) else fmt_span(b - a, mo)
         list(value = fmt_pct(f$worst),
-             rate = sprintf("%s peak to %s low", fmt_when(f$peak, mo), fmt_when(f$low, mo)),
+             rate = sprintf("%s peak to %s low", when(f$peak), when(f$low)),
              ctx = tagList(if(is.na(f$back)) "Not yet back above that peak"
-                           else sprintf("Back above the peak by %s, %s after it", fmt_when(f$back, mo), fmt_span(f$back - f$peak, mo)),
+                           else sprintf("Back above the peak by %s, %s after it", when(f$back), gap(f$peak, f$back)),
+                           if(exact && f$low >= daily_start)
+                             span(class = "ctx-line", "At daily closes; the chart line uses monthly averages."),
                            if(f$now < -0.05) span(class = "flag", sprintf("%s below peak now", fmt_pct(f$now)))))
       }))
     }
@@ -1408,7 +1462,7 @@ server <- function(input, output, session) {
   value_df <- reactive(value_data(real()))
   value_q  <- reactive(value_fifths(value_df()))
   output$value_cards <- renderUI({
-    d <- value_df(); q <- value_q(); now <- d[nrow(d), ]
+    d <- value_df(); q <- value_q(); now <- cape_now
     card <- function(name, value, rate, ctx){
       div(class = "series-card",
           style = paste0("--cl:", series$colour[1], ";--cd:", series$colour_dark[1]),
@@ -1419,8 +1473,8 @@ server <- function(input, output, session) {
     fifth <- function(i, name) card(name, sprintf("%.1f%%", 100 * q$med[i]), "a year, median of the next 10 years",
                                     sprintf("Range %s to %s across %d starting years", fmt_pct(q$worst[i], 1), fmt_pct(q$best[i], 1), q$n[i]))
     div(class = "series calc",
-        card("CAPE now", sprintf("%.1f", now$cape), sprintf("December %d", now$year),
-             sprintf("Higher than %d%% of Decembers since %d (median %.1f)",
+        card("CAPE now", sprintf("%.1f", now$cape), now$when,
+             sprintf("Higher than %d%% of year-ends since %d (median %.1f)",
                      floor(100 * mean(d$cape < now$cape)), d$year[1], median(d$cape))),
         fifth(5, sprintf("Dearest fifth: CAPE above %.0f", q$lo[5])),
         fifth(1, sprintf("Cheapest fifth: CAPE below %.0f", q$hi[1])))
@@ -1457,7 +1511,7 @@ server <- function(input, output, session) {
   #### rolling: how to read ####
   output$how_to <- renderUI({
     if(identical(input$view, "value")){
-      d <- value_df(); q <- value_q(); now <- d[nrow(d), ]
+      d <- value_df(); q <- value_q(); now <- cape_now
       near <- d[!is.na(d$fwd) & d$cape >= 0.8 * now$cape, ]
       return(tags$ul(
         tags$li("CAPE (the cyclically adjusted price-to-earnings ratio, or Shiller P/E) is the share price divided by the average of the last 10 years of company earnings, after inflation. Averaging over a business cycle smooths out booms and recessions, so it measures how expensive shares are against their normal earning power."),
@@ -1466,6 +1520,7 @@ server <- function(input, output, session) {
                         100 * q$med[5], 100 * q$med[1])),
         tags$li(sprintf("This is not a forecast. The spread at any CAPE is wide (%s to %s a year from the dearest fifth), neighbouring dots share 9 of their 10 years so the %d dots hold only about %d separate decades, and CAPE has stayed above its long-run median for most of the last 30 years.",
                         fmt_pct(q$worst[5], 1), fmt_pct(q$best[5], 1), sum(q$n), round(sum(q$n) / value_horizon))),
+        tags$li(sprintf("Today's CAPE is the latest month in Shiller's data (%s); the dots are year ends, and only years with 10 full years after them have a dot.", now$when)),
         tags$li(if(nrow(near)) sprintf("Today's %.1f is near the top of the range. The only starting points within 20%% of it are %s.",
                                        now$cape, paste(sprintf("%d (%s a year)", near$year, fmt_pct(near$fwd, 1)), collapse = ", "))
                 else sprintf("Today's %.1f is above every starting point with 10 years of results.", now$cape)),
@@ -1484,7 +1539,9 @@ server <- function(input, output, session) {
     if(identical(input$view, "falls")) return(tags$ul(
       tags$li("Each point shows how far the value sat below its highest value so far. Zero means a new high."),
       if(monthly_falls())
-        tags$li("US values are monthly: each month's average of daily closes (Shiller's data). Falls that recover within a year, such as 1987 and 2020, show, but the single worst days don't: in 2020 the S&P 500 fell 34% from its February high to its 23 March close, about 19% month to month.")
+        tags$li("US values are monthly: each month's average of daily closes (Shiller's data). Falls that recover within a year, such as 1987 and 2020, show, but averaging hides the single worst days: in 2020 US shares fell 34% from the 19 February close to the 23 March close, about 19% month to month."),
+      if(monthly_falls())
+        tags$li("So the shares + dividends card gives the worst fall at daily closes from July 1926 (the whole US market with dividends, from the Kenneth R. French Data Library), marked \u201cdaily\u201d on the chart. Before 1926, and for price only, it uses the monthly values.")
       else
         tags$li("Australian values are at year end, so falls and rebounds within a year (such as October 1987) don't show in full. Monthly history isn't available for Australia; the US version of this chart is monthly."),
       tags$li("The cards give the worst fall in the selected years, the years of the peak and the low, and when the earlier peak was regained."),
@@ -1578,7 +1635,9 @@ server <- function(input, output, session) {
              fig <- if(stacked() && length(keep) > 1){
                ref <- lapply(setNames(series$key, series$label), function(k){
                  f <- falls_stats()[[k]]
-                 if(f$worst == 0) NULL else list(y = f$worst, text = paste("worst", fmt_pct(f$worst)))
+                 if(f$worst == 0) NULL
+                 else list(y = f$worst, text = paste0("worst ", fmt_pct(f$worst),
+                                                      if(isTRUE(f$exact) && f$low >= daily_start) "<br>at daily closes"))
                })
                stacked_plot(df, "dd", yrs, type = "area", ref = ref, zero_label = "New high",
                             theme = theme())
