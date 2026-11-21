@@ -28,7 +28,14 @@ jobs:
         run: Rscript -e 'install.packages(c("dplyr", "readxl", "tidyr"))'
 
       - name: Rebuild data/usmonthly.RDS from Shiller's data
-        run: Rscript code/us_monthly.R
+        run: |
+          cp data/usmonthly.RDS "$RUNNER_TEMP/previous.RDS"
+          Rscript code/us_monthly.R
+          # compare the data, not the bytes: the file records the R version
+          # that wrote it, so a different R alone would look like a change
+          Rscript -e 'if(identical(readRDS(file.path(Sys.getenv("RUNNER_TEMP"), "previous.RDS")), readRDS("data/usmonthly.RDS"))) quit(status = 3)' \
+            && echo "Data changed." \
+            || { [ $? -eq 3 ] && cp "$RUNNER_TEMP/previous.RDS" data/usmonthly.RDS && echo "Same data; file left as it was."; }
 
       - name: Commit and push if the data changed
         run: |
