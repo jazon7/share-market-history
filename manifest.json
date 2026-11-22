@@ -1264,10 +1264,10 @@
   },
   "files": {
     "about.Rhtml": {
-      "checksum": "6dbb1aa5a545c073c5218c541f5ca054"
+      "checksum": "d0675af36d86e37922ea64478dadcdad"
     },
     "app.R": {
-      "checksum": "aef61c973d711c971ffd579650b8f1b2"
+      "checksum": "4e6a8a20ee86d218990fd173e3684898"
     },
     "data/australianstockmarket.RDS": {
       "checksum": "8aef7afe2abdd6f8741b0311f1c0863a"
@@ -1283,6 +1283,27 @@
     },
     "data/usstockmarket.RDS": {
       "checksum": "7d19b2d397d9d1d23e53bfdffebfef72"
+    },
+    "R/constants.R": {
+      "checksum": "4610663eff024cb6195afa1f2f07243f"
+    },
+    "R/controls.R": {
+      "checksum": "26629dabadb7d702b280e119e4762bbc"
+    },
+    "R/figures.R": {
+      "checksum": "f39c65f273128fce9cac34334876ba20"
+    },
+    "R/format.R": {
+      "checksum": "db333afbd10064178d600b2a6398b8c5"
+    },
+    "R/market.R": {
+      "checksum": "170f46fe9b2d1c61595d116ed391b08c"
+    },
+    "www/app.css": {
+      "checksum": "86c2616820b9a4dfaf299091e5aa401c"
+    },
+    "www/app.js": {
+      "checksum": "0668af06f0e2006dc20311f3ca308457"
     },
     "www/plotly-basic-2.25.2.min.js": {
       "checksum": "95b8e9cd9f459903941d50f156346057"
