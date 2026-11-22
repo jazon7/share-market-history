@@ -4,6 +4,15 @@
 #
 # The yearly update (code/update.R, which needs the manual S&P export for
 # Australia) still rebuilds everything else.
+#
+# code/us_monthly.R checks the download before writing (plausible values,
+# and no change to history more than two years back), so a broken or
+# altered file fails this job instead of reaching the app.
+#
+# Supply chain: actions are pinned to commit SHAs (the tag is in the
+# comment), and R packages come from a dated Posit Package Manager
+# snapshot, so a run installs the same code every month. To update, bump
+# the SHAs and the snapshot date together and run the workflow by hand.
 name: Monthly US data refresh
 
 on:
@@ -16,16 +25,20 @@ permissions:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04       # fixed, to match the package snapshot below
+    timeout-minutes: 20
+    env:
+      # prebuilt binaries for Ubuntu 24.04 (noble), frozen at this date
+      RSPM_SNAPSHOT: https://packagemanager.posit.co/cran/__linux__/noble/2026-11-02
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2
         with:
-          use-public-rspm: true   # prebuilt package binaries: quick installs
+          r-version: "4.6.1"      # the R version in manifest.json
 
       - name: Install R packages
-        run: Rscript -e 'install.packages(c("dplyr", "readxl", "tidyr"))'
+        run: Rscript -e 'install.packages(c("dplyr", "readxl", "tidyr"), repos = Sys.getenv("RSPM_SNAPSHOT"))'
 
       - name: Rebuild data/usmonthly.RDS from Shiller's data
         run: |
