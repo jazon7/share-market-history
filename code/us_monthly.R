@@ -32,7 +32,10 @@ num <- function(v) suppressWarnings(as.numeric(v))
 f <- file.path(tempdir(), "ie_data_monthly.xls")
 home <- paste(readLines("https://shillerdata.com/", warn = FALSE), collapse = "")
 link <- regmatches(home, regexpr("//img1\\.wsimg\\.com/[^\"' ]*ie_data\\.xls[^\"' ]*", home))
-url <- if(length(link)) paste0("https:", link) else "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
+# (no fallback: the old Yale copy is served over plain HTTP only, so it
+# could be altered in transit, and it is no longer kept up to date)
+if(length(link) != 1) stop("Could not find the ie_data.xls link on shillerdata.com; the page may have changed.")
+url <- paste0("https:", link)
 download.file(url, f, mode = "wb", quiet = TRUE, headers = c("User-Agent" = "Mozilla/5.0"))
 
 x <- readxl::read_excel(f, sheet = "Data", skip = 7, col_types = "text", .name_repair = "unique_quiet")
@@ -56,6 +59,42 @@ monthly <- m %>%
          cape  = CAPE) %>%
   select(year, month, price, tr, bonds, cpi, cape) %>%
   as.data.frame()
+
+#### checks before anything is written ####
+# The monthly GitHub Action commits this file and the app redeploys from it,
+# so a broken or altered download must stop here. Limits are well outside
+# anything in the history since 1882 (monthly price moves -26% to +50%,
+# CPI -7% to +7%, CAPE 4.8 to 44, GS10 0.6% to 15%).
+chg <- function(v) v[-1] / v[-length(v)] - 1
+cape_ok <- m$CAPE[!is.na(m$CAPE)]
+last <- as.Date(sprintf("%d-%02d-01", tail(m$year, 1), tail(m$month, 1)))
+problems <- c(
+  "monthly price change outside -40% to +60%" = any(chg(m$P) < -0.40 | chg(m$P) > 0.60),
+  "monthly CPI change outside -10% to +10%"   = any(abs(chg(m$CPI)) > 0.10),
+  "CAPE outside 3 to 80"                      = !length(cape_ok) || any(cape_ok < 3 | cape_ok > 80),
+  "10-year yield outside 0% to 20%"           = any(m$GS10 < 0 | m$GS10 > 20),
+  "dividend not positive"                     = any(m$D <= 0),
+  "latest month more than 8 months old"       = last < Sys.Date() - 245)
+if(any(problems)) stop("Shiller data failed checks, data/usmonthly.RDS not written: ",
+                       paste(names(problems)[problems], collapse = "; "))
+
+# History should not move: Shiller revises only recent months. Anything more
+# than two years back that changes by over 1% (2% for the total-return
+# index, which compounds every dividend) stops the update. To accept a
+# genuine revision, run with ALLOW_HISTORY_CHANGE=1.
+if(file.exists("data/usmonthly.RDS") && Sys.getenv("ALLOW_HISTORY_CHANGE") != "1"){
+  old <- readRDS("data/usmonthly.RDS")
+  cut <- (tail(old$year, 1) - 2) * 100 + tail(old$month, 1)
+  both <- merge(old[old$year * 100 + old$month <= cut, ], monthly, by = c("year", "month"))
+  moved <- c(price = max(abs(both$price.y / both$price.x - 1)),
+             cpi   = max(abs(both$cpi.y / both$cpi.x - 1)),
+             bonds = max(abs(both$bonds.y / both$bonds.x - 1)),
+             tr    = max(abs(both$tr.y / both$tr.x - 1)) / 2)
+  if(nrow(both) < nrow(old[old$year * 100 + old$month <= cut, ]) || any(moved > 0.01))
+    stop(sprintf("Shiller's history changed (largest moves: %s), data/usmonthly.RDS not written. ",
+                 paste(sprintf("%s %.2f%%", names(moved), 100 * moved * c(1, 1, 1, 2)), collapse = ", ")),
+         "If the revision is genuine, rerun with ALLOW_HISTORY_CHANGE=1.")
+}
 
 saveRDS(monthly, "data/usmonthly.RDS")
 cat(sprintf("Wrote data/usmonthly.RDS: %d-%02d to %d-%02d\n",

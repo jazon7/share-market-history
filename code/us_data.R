@@ -36,10 +36,13 @@ dl <- function(url, name){
 num <- function(v) suppressWarnings(as.numeric(v))
 
 #### Shiller: monthly -> annual ####
-# shillerdata.com links the current file; fall back to the Yale copy
+# shillerdata.com links the current file
 home <- paste(readLines("https://shillerdata.com/", warn = FALSE), collapse = "")
 link <- regmatches(home, regexpr("//img1\\.wsimg\\.com/[^\"' ]*ie_data\\.xls[^\"' ]*", home))
-shiller_url <- if(length(link)) paste0("https:", link) else "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
+# (no fallback: the old Yale copy is served over plain HTTP only, so it
+# could be altered in transit, and it is no longer kept up to date)
+if(length(link) != 1) stop("Could not find the ie_data.xls link on shillerdata.com; the page may have changed.")
+shiller_url <- paste0("https:", link)
 x <- readxl::read_excel(dl(shiller_url, "ie_data.xls"), sheet = "Data", skip = 7,
                         col_types = "text", .name_repair = "unique_quiet")
 m <- tibble(date = num(x$Date), P = num(x$P), D = num(x$D), CPI = num(x$CPI),
