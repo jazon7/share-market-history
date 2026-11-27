@@ -156,3 +156,26 @@ value_fifths <- function(d){
                worst = min(s$fwd), best = max(s$fwd))
   }))
 }
+
+#### CAPE over time ####
+# m: the US monthly data (year, month, cape). Labelled turning points: the
+# highest or lowest CAPE inside each window of years (searched, not typed in,
+# so they follow revisions to Shiller's data).
+cape_episodes <- function(m){
+  w <- data.frame(from = c(1915, 1925, 1930, 1960, 1975, 1990, 2008),
+                  to   = c(1925, 1931, 1935, 1970, 1985, 2005, 2010),
+                  kind = c("low", "high", "low", "high", "low", "high", "low"))
+  t <- m$year + (m$month - 1) / 12
+  do.call(rbind, lapply(seq_len(nrow(w)), function(i){
+    k <- which(t >= w$from[i] & t < w$to[i])
+    j <- k[if(w$kind[i] == "high") which.max(m$cape[k]) else which.min(m$cape[k])]
+    data.frame(year = m$year[j], month = m$month[j], cape = m$cape[j], kind = w$kind[i])
+  }))
+}
+# runs of consecutive months with CAPE at or above `level`: from, to (rows of m)
+cape_runs <- function(m, level){
+  k <- which(m$cape >= level)
+  if(!length(k)) return(data.frame(from = integer(), to = integer()))
+  g <- cumsum(c(1, diff(k) != 1))
+  data.frame(from = tapply(k, g, min), to = tapply(k, g, max))
+}

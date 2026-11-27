@@ -101,6 +101,27 @@ cape_now <- local({
   list(cape = m$cape, year = m$year, month = m$month, when = paste(month.name[m$month], m$year))
 })
 
+# CAPE month by month, for the chart of its history (Valuation tab), and a
+# sentence on when it was last as high as today
+cape_monthly <- us_monthly_all[!is.na(us_monthly_all$cape), c("year", "month", "cape")]
+cape_history <- local({
+  m <- cape_monthly; n <- nrow(m)
+  mon <- function(i) paste(month.abb[m$month[i]], m$year[i])
+  span <- function(a, b) if(a == b) mon(a) else if(m$year[a] == m$year[b])
+    paste0(month.abb[m$month[a]], "\u2013", mon(b)) else paste0(mon(a), "\u2013", mon(b))
+  runs <- cape_runs(m, cape_now$cape)
+  recent <- runs$to >= n - 36                                # ending within the last three years
+  top <- which.max(m$cape)
+  list(first = m$year[1],
+       text = paste0(
+         sprintf("Months with CAPE at or above today's %.1f: %s. ", cape_now$cape,
+                 paste(mapply(span, runs$from, runs$to), collapse = "; ")),
+         if(any(!recent) && any(recent))
+           sprintf("Before %s, the last was %s. ", mon(runs$from[which(recent)[1]]), mon(max(runs$to[!recent]))),
+         sprintf("The highest was %.1f in %s; the median since %d is %.1f.",
+                 m$cape[top], mon(top), m$year[1], median(m$cape))))
+})
+
 ######################################################################
 # UI
 ######################################################################
@@ -201,6 +222,12 @@ ui <- function(request) page(
                           value = c(min_yr, max_yr),
                           sep = "", ticks = FALSE, width = "100%")),
           
+          # CAPE over time (Valuation tab, CAPE starting point)
+          conditionalPanel("input.view == 'value' && input.measure != 'past'",
+                           div(class = "chart-title", tags$h2(sprintf("CAPE since %d", cape_history$first)),
+                               tags$p(cape_history$text)),
+                           figureOutput("cape_chart", height = "320px")),
+
           div(class = "chart-foot",
               div(conditionalPanel("['rolling', 'falls', 'calc', 'value'].indexOf(input.view) >= 0",
                                    tags$details(class = "how",
@@ -781,6 +808,14 @@ server <- function(input, output, session) {
                    if(identical(view(), "calc")) amount(),
                    if(view() %in% c("growth", "calc", "value")) isTRUE(input$narrow))
   
+  # CAPE over time: the same for everyone, so cached app-wide
+  output$cape_chart <- renderFigure({
+    narrow <- isTRUE(input$narrow)
+    themed_figure(function(theme) cape_history_plot(cape_monthly, cape_now, narrow = narrow, theme = theme))
+  }) %>% bindCache(isTRUE(input$narrow))
+  session$sendCustomMessage("chart-label", list(
+    id = "cape_chart", label = paste(sprintf("Line chart of CAPE month by month since %d.", cape_history$first), cape_history$text)))
+
   #### download: the data behind the current chart ####
   output$download <- downloadHandler(
     filename = function(){

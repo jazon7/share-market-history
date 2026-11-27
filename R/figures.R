@@ -522,3 +522,60 @@ value_plot <- function(pts, fifths, now, x_all, h = value_horizon, fit = NULL, n
            line = list(color = accent, width = 2))),
     annotations = notes)
 }
+
+# CAPE month by month since the data starts: the months at or above today's
+# level in the accent colour, today's level (dashed) and the median, and the
+# main highs and lows labelled. m: year, month, cape (no gaps); now: list(cape).
+cape_history_plot <- function(m, now, narrow = FALSE, theme = "light"){
+  ink <- inks[[theme]]; col <- series_colours(theme)[[series$label[1]]]
+  accent <- series_colours(theme)[[series$label[2]]]
+  day <- function(y, mo) sprintf("%d-%02d-15", y, mo)
+  x <- day(m$year, m$month); n <- nrow(m)
+  tick_font <- list(size = 11.5, color = ink$muted)
+  p <- list(data = list()) %>%
+    fig_trace(x, m$cape, type = "scatter", mode = "lines", line = list(color = col, width = 1.4),
+              hovertemplate = "%{x|%b %Y}: CAPE %{y:.1f}<extra></extra>")
+  runs <- cape_runs(m, now$cape)
+  for(i in seq_len(nrow(runs))){
+    k <- runs$from[i]:runs$to[i]
+    p <- p %>% fig_trace(x[k], m$cape[k], type = "scatter", mode = if(length(k) > 1) "lines" else "markers",
+                         line = list(color = accent, width = 2.4), marker = list(color = accent, size = 5),
+                         hoverinfo = "skip")
+  }
+  p <- p %>% fig_trace(x[n], m$cape[n], type = "scatter", mode = "markers", hoverinfo = "skip",
+                       marker = list(color = accent, size = 8, line = list(color = ink$page, width = 2)),
+                       cliponaxis = FALSE)
+  ep <- cape_episodes(m)
+  if(narrow) ep <- ep[ep$kind == "high" | ep$cape == min(ep$cape), ]       # fewer labels on a phone
+  med <- median(m$cape)
+  notes <- c(
+    lapply(seq_len(nrow(ep)), function(i) list(
+      x = day(ep$year[i], ep$month[i]), y = ep$cape[i], showarrow = FALSE,
+      yanchor = if(ep$kind[i] == "high") "bottom" else "top", yshift = if(ep$kind[i] == "high") 3 else -3,
+      text = sprintf("%s %.1f", if(narrow) ep$year[i] else paste(month.abb[ep$month[i]], ep$year[i]), ep$cape[i]),
+      font = list(size = 10.5, color = ink$muted))),
+    list(list(x = 1, xref = "paper", xanchor = "left", xshift = 8, y = now$cape, showarrow = FALSE,
+              text = sprintf("<b>%.1f</b> today", now$cape), font = list(size = 11.5, color = accent)),
+         list(x = 1, xref = "paper", xanchor = "left", xshift = 8, y = med, showarrow = FALSE,
+              text = sprintf("median %.1f", med), font = list(size = 11, color = ink$muted))))
+  p %>% fig_layout(
+    font = list(family = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif", color = ink$primary),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)", showlegend = FALSE,
+    hovermode = "x", hoverdistance = -1,
+    margin = list(t = 18, r = 84, b = 30, l = 52),
+    xaxis = list(type = "date", title = "", range = c(x[1], day(m$year[n] + 1, 6)), tickfont = tick_font,
+                 showgrid = FALSE, zeroline = FALSE, showline = TRUE, linecolor = ink$axis,
+                 ticks = "outside", ticklen = 4, tickcolor = ink$axis, fixedrange = TRUE,
+                 showspikes = TRUE, spikemode = "across", spikesnap = "cursor", spikethickness = 1,
+                 spikecolor = ink$axis, spikedash = "solid"),
+    yaxis = list(title = "", range = c(0, max(m$cape) * 1.1), tickfont = tick_font, gridcolor = ink$grid,
+                 zeroline = FALSE, showline = FALSE, ticks = "", nticks = 6, fixedrange = TRUE),
+    shapes = list(
+      list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = now$cape, y1 = now$cape, layer = "below",
+           line = list(color = accent, width = 1, dash = "dash")),
+      list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = med, y1 = med, layer = "below",
+           line = list(color = ink$zero, width = 1, dash = "dot"))),
+    annotations = notes,
+    hoverlabel = list(bgcolor = ink$hover_bg, bordercolor = ink$hover_border,
+                      font = list(size = 12, color = ink$primary)))
+}

@@ -1267,7 +1267,7 @@
       "checksum": "d0675af36d86e37922ea64478dadcdad"
     },
     "app.R": {
-      "checksum": "a223d7a0c626537f22969cd080be8776"
+      "checksum": "869ffbd5268a1a43f05975db3458ffd5"
     },
     "data/australianstockmarket.RDS": {
       "checksum": "8aef7afe2abdd6f8741b0311f1c0863a"
@@ -1291,13 +1291,13 @@
       "checksum": "ed63bb2857edfcc839eb936ea4f4a387"
     },
     "R/figures.R": {
-      "checksum": "4f1b2d2dcbe26eebdbccc9a83384ed38"
+      "checksum": "d2a1863b65fa07c2fe35549d674c5792"
     },
     "R/format.R": {
       "checksum": "db333afbd10064178d600b2a6398b8c5"
     },
     "R/market.R": {
-      "checksum": "1fb99fcf47a4a7813b342b456a003997"
+      "checksum": "4a6c16cc2972f42bb88b93c6810e4821"
     },
     "www/app.css": {
       "checksum": "fcb27387e2db7c03ed397323a1580c0e"
