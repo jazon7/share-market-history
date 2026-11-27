@@ -451,13 +451,17 @@ dividend_plot <- function(path, x_range, narrow = FALSE, theme = "light"){
                                   size = 12, color = ink$primary)))
 }
 
-# now: today's CAPE, list(cape, year, month, when)
-value_plot <- function(d, fifths, now, h = value_horizon, fit = NULL, narrow = FALSE, theme = "light"){
+# pts: value_points(); x_all: every value of the measure (for the axis);
+# now: today's value and the measure's wording, from value_now() in app.R:
+#   x, year, month (today's point and when its next h years end), label,
+#   when, when_short, near (the past starts most like today), x_hover,
+#   trend_hover, x_title, x_format, x_range(x_all), trend_x(fit) and
+#   trend_anchor (where the trend line's label sits)
+value_plot <- function(pts, fifths, now, x_all, h = value_horizon, fit = NULL, narrow = FALSE, theme = "light"){
   ink <- inks[[theme]]; col <- series_colours(theme)[[series$label[1]]]
   accent <- series_colours(theme)[[series$label[2]]]          # today, and the starts most like it
-  pts <- d[!is.na(d$fwd), ]
-  near <- pts[pts$cape >= 0.8 * now$cape, ]                     # within 20% of today's CAPE
-  hov <- "%{customdata}<br>CAPE at the start: %{x:.1f}<br>Return: %{y:.1%} a year<extra></extra>"
+  near <- now$near                                              # the past starts most like today
+  hov <- paste0("%{customdata}<br>", now$x_hover, "<br>Return: %{y:.1%} a year<extra></extra>")
   tick_font <- list(size = 11.5, color = ink$muted)
   p <- list(data = list())
   if(!is.null(fit)) p <- p %>%
@@ -466,14 +470,14 @@ value_plot <- function(d, fifths, now, h = value_horizon, fit = NULL, narrow = F
               line = list(width = 0), hoverinfo = "skip") %>%
     fig_trace(fit$grid, fit$yhat, type = "scatter", mode = "lines",
               line = list(color = ink$secondary, width = 1.5, dash = "dash"),
-              hovertemplate = "Trend line: %{y:.1%} a year<br>at CAPE %{x:.1f}<extra></extra>")
+              hovertemplate = paste0("Trend line: %{y:.1%} a year<br>", now$trend_hover, "<extra></extra>"))
   p <- p %>%
-    fig_trace(pts$cape, pts$fwd, type = "scatter", mode = "markers",
+    fig_trace(pts$x, pts$fwd, type = "scatter", mode = "markers",
               customdata = I(sprintf("End of %d to end of %d", pts$year, pts$year + h)),
               marker = list(color = fade(col, .5), size = 8, line = list(color = col, width = 1)),
               hovertemplate = hov)
   if(nrow(near)) p <- p %>%
-    fig_trace(near$cape, near$fwd, type = "scatter", mode = "markers",
+    fig_trace(near$x, near$fwd, type = "scatter", mode = "markers",
               customdata = I(sprintf("End of %d to end of %d", near$year, near$year + h)),
               marker = list(color = accent, size = 10, line = list(color = ink$page, width = 1.5)),
               hovertemplate = hov)
@@ -486,11 +490,10 @@ value_plot <- function(d, fifths, now, h = value_horizon, fit = NULL, narrow = F
       x = (fifths$lo[i] + fifths$hi[i]) / 2, y = fifths$med[i], yshift = 11, showarrow = FALSE,
       text = sprintf("%.1f%%", 100 * fifths$med[i]), font = list(size = 11.5, color = ink$primary))),
     # on a phone the label is shorter and sits against the right edge, so it fits
-    list(list(x = if(narrow) 1 else now$cape, xref = if(narrow) "paper" else "x", y = 1, yref = "paper",
+    list(list(x = if(narrow) 1 else now$x, xref = if(narrow) "paper" else "x", y = 1, yref = "paper",
               yanchor = "bottom", xanchor = "right", xshift = if(narrow) 0 else -6,
               showarrow = FALSE, align = "right",
-              text = paste0(sprintf("<b>Today: CAPE %.1f</b> (%s)", now$cape,
-                                    if(narrow) paste(month.abb[now$month], now$year) else now$when),
+              text = paste0(sprintf("<b>Today: %s</b> (%s)", now$label, if(narrow) now$when_short else now$when),
                             if(nrow(near)) sprintf("<br>\u25cf Closest past starts%s: %s to %s a year",
                                                    if(narrow) "" else paste0(" (", year_runs(near$year), ")"),
                                                    fmt_pct(min(near$fwd), 1), fmt_pct(max(near$fwd), 1)),
@@ -498,7 +501,7 @@ value_plot <- function(d, fifths, now, h = value_horizon, fit = NULL, narrow = F
                                     if(narrow) "No dot yet" else "No dot for today yet", h,
                                     if(narrow) now$year + h else paste(month.name[now$month], now$year + h))),
               font = list(size = 12, color = accent))),
-    if(!is.null(fit)) list(list(x = now$cape - 1, y = sum(fit$b * c(1, log(now$cape - 1))), xanchor = "right", yanchor = "top",
+    if(!is.null(fit)) list(list(x = now$trend_x(fit), y = fit$predict(now$trend_x(fit)), xanchor = now$trend_anchor, yanchor = "top",
               yshift = -6, showarrow = FALSE, text = sprintf("Trend line, R\u00b2 %.2f", fit$r2),
               font = list(size = 11.5, color = ink$secondary))))
   p %>% fig_layout(
@@ -506,8 +509,8 @@ value_plot <- function(d, fifths, now, h = value_horizon, fit = NULL, narrow = F
     paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)", showlegend = FALSE,
     hovermode = "closest",
     margin = list(t = 62, r = 16, b = 52, l = 52),
-    xaxis = list(title = list(text = "CAPE at the start (price \u00f7 10-year average earnings)", font = list(size = 12, color = ink$muted)),
-                 range = c(0, max(d$cape) * 1.04), tickfont = tick_font, showgrid = FALSE, zeroline = FALSE,
+    xaxis = list(title = list(text = now$x_title, font = list(size = 12, color = ink$muted)),
+                 range = now$x_range(x_all), tickformat = now$x_format, tickfont = tick_font, showgrid = FALSE, zeroline = FALSE,
                  showline = TRUE, linecolor = ink$axis, ticks = "outside", ticklen = 4, tickcolor = ink$axis,
                  fixedrange = TRUE),
     yaxis = list(title = list(text = sprintf("Average yearly return, next %d years", h), font = list(size = 12, color = ink$muted)),
@@ -515,7 +518,7 @@ value_plot <- function(d, fifths, now, h = value_horizon, fit = NULL, narrow = F
                  gridcolor = ink$grid, zeroline = FALSE, showline = FALSE, ticks = "", fixedrange = TRUE),
     shapes = list(
       list(type = "line", xref = "paper", x0 = 0, x1 = 1, y0 = 0, y1 = 0, layer = "below", line = list(color = ink$zero, width = 1)),
-      list(type = "line", x0 = now$cape, x1 = now$cape, yref = "paper", y0 = 0, y1 = 1,
+      list(type = "line", x0 = now$x, x1 = now$x, yref = "paper", y0 = 0, y1 = 1,
            line = list(color = accent, width = 2))),
     annotations = notes)
 }

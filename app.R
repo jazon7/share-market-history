@@ -185,7 +185,9 @@ ui <- function(request) page(
           
           # years: current range and quick picks; the slider under the chart does any range
           conditionalPanel("input.view == 'value'", div(class = "period",
-                           input_switch("fit", "Show trend line (regression on CAPE)", value = FALSE))),
+                           text_switch("measure", "Starting point",
+                                       c("CAPE" = "cape", "Return in the years before" = "past"), "cape"),
+                           input_switch("fit", "Show trend line (regression)", value = FALSE))),
           conditionalPanel("['calc', 'value'].indexOf(input.view) < 0", div(class = "period",
                            span(class = "period-label", "Years"),
                            span(id = "years-range", class = "period-range", paste0(min_yr, "\u2013", max_yr)),
@@ -421,42 +423,88 @@ server <- function(input, output, session) {
   })
   # the same for every visitor with the same choices: cached app-wide
   value_df <- reactive(value_data(if(real()) markets$us$index_real else markets$us$index_nom, us_cape, horizon())) %>% bindCache(real(), horizon())
-  value_q  <- reactive(value_fifths(value_df())) %>% bindCache(real(), horizon())
-  value_reg <- reactive(value_fit(value_df(), horizon(), cape_now$cape)) %>% bindCache(real(), horizon())
+  # what the starting points are sorted by: CAPE, or the return over the
+  # h years before (the same length as the h years after)
+  measure <- reactive({
+    m <- input$measure
+    if(is.character(m) && length(m) == 1 && m %in% names(value_measures)) m else "cape"
+  })
+  value_pts <- reactive(value_points(value_df(), measure())) %>% bindCache(real(), horizon(), measure())
+  value_q  <- reactive(value_fifths(value_pts())) %>% bindCache(real(), horizon(), measure())
+  # today's value of the measure, and the words and axis that go with it
+  value_now <- reactive({
+    h <- horizon(); d <- value_df(); pts <- value_pts()
+    if(measure() == "cape"){
+      x <- cape_now$cape
+      list(x = x, year = cape_now$year, month = cape_now$month, x_all = d$cape,
+           label = sprintf("CAPE %.1f", x), value = sprintf("%.1f", x), when = cape_now$when,
+           when_short = paste(month.abb[cape_now$month], cape_now$year),
+           near = pts[pts$x >= 0.8 * x, ],                       # within 20% of today's CAPE
+           x_hover = "CAPE at the start: %{x:.1f}", trend_hover = "at CAPE %{x:.1f}",
+           x_title = "CAPE at the start (price \u00f7 10-year average earnings)", x_format = NULL,
+           x_range = function(v) c(0, max(v) * 1.04),
+           trend_x = function(fit) x - 1, trend_anchor = "right")        # just left of today
+    } else {
+      x <- d$past[d$year == max_yr]; x_all <- d$past[!is.na(d$past)]
+      list(x = x, year = max_yr, month = 12L, x_all = x_all, first = min(d$year[!is.na(d$past)]),
+           label = sprintf("%.1f%% a year", 100 * x), value = sprintf("%.1f%%", 100 * x),
+           when = sprintf("end of %d to end of %d", max_yr - h, max_yr),
+           when_short = sprintf("%d\u2013%d", max_yr - h + 1, max_yr),
+           near = local({ k <- order(abs(pts$x - x))[seq_len(min(5, nrow(pts)))]   # the five closest
+                          pts[sort(k), ] }),
+           x_hover = sprintf("Previous %d years: %%{x:.1%%} a year", h), trend_hover = "after %{x:.1%} a year",
+           x_title = sprintf("Average yearly return over the previous %d years", h), x_format = ".0%",
+           x_range = function(v){ r <- range(v); r + c(-1, 1) * diff(r) * 0.04 },
+           trend_x = function(fit) min(fit$grid) + 0.005, trend_anchor = "left")   # at its left end
+    }
+  })
+  value_reg <- reactive(value_fit(value_pts(), horizon(), value_now()$x, value_measures[[measure()]]$ln)) %>%
+    bindCache(real(), horizon(), measure())
   output$value_reg <- renderUI({
     req(isTRUE(input$fit), identical(view(), "value"))      # only worked out when asked for
     f <- value_reg(); pp <- function(x, d = 1) sub("^-", "\u2212", sprintf(paste0("%.", d, "f"), 100 * x))
-    term <- c("Intercept (a)", "ln(CAPE) (b)")
+    cape <- f$ln                                     # CAPE (on ln CAPE), or the past return
+    # the CAPE slope is in points a year per unit of ln(CAPE); the past-return
+    # slope is points of the next return per point of the past one
+    est <- list(function(x) pp(x, 2), if(cape) function(x) pp(x, 2) else function(x) pp(x / 100, 2))
+    term <- c("Intercept (a)", if(cape) "ln(CAPE) (b)" else sprintf("Past %d-year return (b)", f$h))
     tagList(
-      tags$p(class = "bear-notes", sprintf("Model: average yearly return over the next %d years = a + b \u00d7 ln(CAPE). Fitted by least squares to %d starting years (end of %d to end of %d), US shares with dividends, %s. Estimates are in percentage points a year.",
-                                           f$h, f$n, f$years[1], f$years[2], if(real()) "after inflation" else "before inflation")),
+      tags$p(class = "bear-notes",
+             if(cape) sprintf("Model: average yearly return over the next %d years = a + b \u00d7 ln(CAPE). Fitted by least squares to %d starting years (end of %d to end of %d), US shares with dividends, %s. Estimates are in percentage points a year.",
+                              f$h, f$n, f$years[1], f$years[2], if(real()) "after inflation" else "before inflation")
+             else sprintf("Model: average yearly return over the next %d years = a + b \u00d7 the average yearly return over the previous %d years. Fitted by least squares to %d starting years (end of %d to end of %d), US shares with dividends, %s. The intercept is in percentage points a year; b is the change in the next return for each extra point a year in the past one.",
+                          f$h, f$h, f$n, f$years[1], f$years[2], if(real()) "after inflation" else "before inflation")),
       tags$table(class = "method-table bear-table",
         tags$thead(tags$tr(tags$th(""), tags$th(class = "num", "Estimate"), tags$th(class = "num", "Std error (OLS)"),
                            tags$th(class = "num", "Std error (Newey\u2013West)"), tags$th(class = "num", "95% CI (Newey\u2013West)"), tags$th(class = "num", "t (Newey\u2013West)"))),
         tags$tbody(lapply(1:2, function(i) tags$tr(
-          tags$td(term[i]), tags$td(class = "num", pp(f$b[i], 2)), tags$td(class = "num", pp(f$se_ols[i], 2)),
-          tags$td(class = "num", pp(f$se_nw[i], 2)),
-          tags$td(class = "num", sprintf("%s to %s", pp(f$b[i] - 1.96 * f$se_nw[i], 2), pp(f$b[i] + 1.96 * f$se_nw[i], 2))),
+          tags$td(term[i]), tags$td(class = "num", est[[i]](f$b[i])), tags$td(class = "num", est[[i]](f$se_ols[i])),
+          tags$td(class = "num", est[[i]](f$se_nw[i])),
+          tags$td(class = "num", sprintf("%s to %s", est[[i]](f$b[i] - 1.96 * f$se_nw[i]), est[[i]](f$b[i] + 1.96 * f$se_nw[i]))),
           tags$td(class = "num", sub("^-", "\u2212", sprintf("%.1f", f$b[i] / f$se_nw[i]))))))),
       tags$table(class = "method-table bear-table",
         tags$tbody(
           tags$tr(tags$td("R\u00b2"), tags$td(class = "num", sprintf("%.2f", f$r2))),
-          tags$tr(tags$td("R\u00b2 using 1/CAPE (the earnings yield) instead"), tags$td(class = "num", sprintf("%.2f", f$r2_inv))),
+          if(cape) tags$tr(tags$td("R\u00b2 using 1/CAPE (the earnings yield) instead"), tags$td(class = "num", sprintf("%.2f", f$r2_inv))),
           tags$tr(tags$td("Residual standard deviation"), tags$td(class = "num", paste(pp(f$sigma), "points"))),
           tags$tr(tags$td("Starting years / separate periods"), tags$td(class = "num", sprintf("%d / about %d", f$n, round(f$n / f$h)))),
-          tags$tr(tags$td("A doubling of CAPE goes with"), tags$td(class = "num", sprintf("%s points a year", pp(f$b[2] * log(2))))),
-          tags$tr(tags$td(sprintf("Trend line at today's CAPE (%.1f)", f$x_now)), tags$td(class = "num", sprintf("%s%% a year", pp(f$f0)))),
+          if(cape) tags$tr(tags$td("A doubling of CAPE goes with"), tags$td(class = "num", sprintf("%s points a year", pp(f$b[2] * log(2)))))
+          else tags$tr(tags$td("5 more points a year in the past goes with"), tags$td(class = "num", sprintf("%s points a year", pp(f$b[2] * 0.05)))),
+          tags$tr(tags$td(if(cape) sprintf("Trend line at today's CAPE (%.1f)", f$x_now)
+                          else sprintf("Trend line at today's past return (%s%% a year)", pp(f$x_now))),
+                  tags$td(class = "num", sprintf("%s%% a year", pp(f$f0)))),
           tags$tr(tags$td("95% CI for that average (Newey\u2013West)"), tags$td(class = "num", sprintf("%s%% to %s%%", pp(f$ci0[1]), pp(f$ci0[2])))),
           tags$tr(tags$td("Rough 95% range for a single outcome"), tags$td(class = "num", sprintf("%s%% to %s%%", pp(f$pi0[1]), pp(f$pi0[2])))))),
       tags$ul(class = "bear-notes",
         tags$li(sprintf("Newey\u2013West standard errors: neighbouring dots share %d of their %d years, so their errors are correlated and ordinary (OLS) standard errors look too precise. Newey\u2013West, with a lag of %d years, allows for that; it is the column to use.", f$h - 1, f$h, f$h - 1)),
-        tags$li("ln(CAPE) rather than CAPE: the link flattens at high valuations, and the log fits that better. The earnings-yield version (1/CAPE) is the other common choice; its R\u00b2 is shown for comparison."),
-        tags$li("This is an in-sample fit: the line is drawn through the same history it describes. Studies of real-time forecasting find valuation ratios do noticeably worse out of sample (Goyal and Welch, 2008), and overlapping periods flatter R\u00b2 at long horizons (Boudoukh, Richardson and Whitelaw, 2008)."),
-        tags$li("Today's CAPE is near the edge of the history, where few dots constrain the line, so the trend value there is especially uncertain.")))
+        if(cape) tags$li("ln(CAPE) rather than CAPE: the link flattens at high valuations, and the log fits that better. The earnings-yield version (1/CAPE) is the other common choice; its R\u00b2 is shown for comparison."),
+        if(cape) tags$li("This is an in-sample fit: the line is drawn through the same history it describes. Studies of real-time forecasting find valuation ratios do noticeably worse out of sample (Goyal and Welch, 2008), and overlapping periods flatter R\u00b2 at long horizons (Boudoukh, Richardson and Whitelaw, 2008).")
+        else tags$li("This is an in-sample fit: the line is drawn through the same history it describes, and overlapping periods flatter R\u00b2 at long horizons (Boudoukh, Richardson and Whitelaw, 2008)."),
+        if(cape) tags$li("Today's CAPE is near the edge of the history, where few dots constrain the line, so the trend value there is especially uncertain.")))
   })
   outputOptions(output, "value_reg", suspendWhenHidden = FALSE)   # lives in a closed <details>
   output$value_cards <- renderUI({
-    d <- value_df(); q <- value_q(); now <- cape_now
+    d <- value_df(); q <- value_q(); now <- value_now()
     card <- function(name, value, rate, ctx){
       div(class = "series-card",
           style = paste0("--cl:", series$colour[1], ";--cd:", series$colour_dark[1]),
@@ -466,10 +514,16 @@ server <- function(input, output, session) {
     }
     fifth <- function(i, name) card(name, sprintf("%.1f%%", 100 * q$med[i]), sprintf("a year, median of the next %d years", horizon()),
                                     sprintf("Range %s to %s across %d starting years", fmt_pct(q$worst[i], 1), fmt_pct(q$best[i], 1), q$n[i]))
+    if(measure() == "past") return(div(class = "series calc",
+        card(sprintf("Past %d years now", horizon()), now$value, paste("a year,", now$when_short),
+             sprintf("Higher than %d%% of year-ends since %d (median %.1f%%)",
+                     floor(100 * mean(now$x_all < now$x)), now$first, 100 * median(now$x_all))),
+        fifth(5, sprintf("Strongest fifth: past return above %.1f%%", 100 * q$lo[5])),
+        fifth(1, sprintf("Weakest fifth: past return below %.1f%%", 100 * q$hi[1]))))
     div(class = "series calc",
-        card("CAPE now", sprintf("%.1f", now$cape), now$when,
+        card("CAPE now", now$value, now$when,
              sprintf("Higher than %d%% of year-ends since %d (median %.1f)",
-                     floor(100 * mean(d$cape < now$cape)), d$year[1], median(d$cape))),
+                     floor(100 * mean(d$cape < now$x)), d$year[1], median(d$cape))),
         fifth(5, sprintf("Dearest fifth: CAPE above %.0f", q$lo[5])),
         fifth(1, sprintf("Cheapest fifth: CAPE below %.0f", q$hi[1])))
   })
@@ -477,7 +531,7 @@ server <- function(input, output, session) {
   output$stats_note <- renderUI({
     infl <- if(real()) "after inflation" else "before inflation"
     txt <- if(identical(view(), "value")){
-      d <- value_df(); s <- d[!is.na(d$fwd), ]
+      s <- value_pts()
       paste0(sprintf("US shares with dividends, %s. Starting points from the end of %d to the end of %d; each bar is the median of one fifth of them. ",
                      infl, min(s$year), max(s$year)),
              "Hover over a dot for its years.")
@@ -504,6 +558,24 @@ server <- function(input, output, session) {
   
   #### rolling: how to read ####
   output$how_to <- renderUI({
+    if(identical(view(), "value") && measure() == "past"){
+      d <- value_df(); pts <- value_pts(); q <- value_q(); now <- value_now(); h <- horizon()
+      both <- d[!is.na(d$past), ]
+      return(tags$ul(
+        tags$li(sprintf("Each dot is one December: the average yearly return of US shares with dividends over the previous %d years (across) and over the next %d years (up). The bars are the median return for each fifth of the starting points, weakest past to strongest.", h, h)),
+        tags$li("It asks whether a strong or weak run says anything about the next one. Choose 5, 10, 15 or 20 years above the chart; the same length is used before and after."),
+        tags$li(sprintf("After the strongest fifth of past periods, the next %d years returned a median of %.1f%% a year; after the weakest fifth, %.1f%%; across all %d starting points, %.1f%%.",
+                        h, 100 * q$med[5], 100 * q$med[1], nrow(pts), 100 * median(pts$fwd))),
+        tags$li(sprintf("This is not a forecast. The spread is wide (%s to %s a year after the strongest fifth), and neighbouring dots share %d of their %d years before and after, so the %d dots hold only about %d separate %d-year periods.",
+                        fmt_pct(q$worst[5], 1), fmt_pct(q$best[5], 1), h - 1, h, nrow(pts), round(nrow(pts) / h), h)),
+        tags$li(sprintf("A strong run usually leaves shares dearer: across year ends, the past %d-year return and CAPE have a correlation of %.2f. Switch the starting point to CAPE to compare valuation directly.",
+                        h, cor(both$past, both$cape))),
+        tags$li(sprintf("Today's point is the %d years to the end of %d: %s, higher than %d%% of year ends since %d. ",
+                        h, max_yr, now$label, floor(100 * mean(now$x_all < now$x)), now$first),
+                sprintf("The five starting points closest to it (highlighted) were followed by %s.",
+                        paste(sprintf("%s a year from %d", fmt_pct(now$near$fwd, 1), now$near$year), collapse = ", "))),
+        tags$li("Returns: the same US series as the other tabs.")))
+    }
     if(identical(view(), "value")){
       d <- value_df(); q <- value_q(); now <- cape_now
       near <- d[!is.na(d$fwd) & d$cape >= 0.8 * now$cape, ]
@@ -564,8 +636,11 @@ server <- function(input, output, session) {
     real_txt <- if(real()) ", after inflation" else ""
     first_roll <- function() min(sapply(rolling_ctx(), `[[`, "first"))
     switch(view(),
-           value = list(paste0("Valuation and what came next", real_txt),
-                        sprintf("How expensive US shares were at each year end (CAPE), and the average yearly return over the next %d years.", horizon())),
+           value = if(measure() == "past")
+                     list(paste0("Past returns and what came next", real_txt),
+                          sprintf("The average yearly return of US shares over the %d years before each year end, and over the %d years after.", horizon(), horizon()))
+                   else list(paste0("Valuation and what came next", real_txt),
+                             sprintf("How expensive US shares were at each year end (CAPE), and the average yearly return over the next %d years.", horizon())),
            calc = list(paste0("What ", fmt_amount(amount()), " became, dividends reinvested or taken as cash", real_txt),
                        "The lower shading is the dividends paid out; the upper shading is what reinvesting them added."),
            growth = list(paste0("Growth of $100 invested in ", yrs()[1], real_txt),
@@ -596,7 +671,11 @@ server <- function(input, output, session) {
         sprintf("Dividends reinvested: %s. Dividends taken as cash: %s, of which %s in dividends.",
                 fmt_dollars(p$reinvested[n]), fmt_dollars(p$shares[n] + p$cash[n]), fmt_dollars(p$cash[n]))
       },
-      value = {
+      value = if(measure() == "past"){
+        q <- value_q(); now <- value_now()
+        sprintf("Past %d years now: %s (%s). Median yearly return over the next %d years: %.1f%% after the strongest fifth of past periods, %.1f%% after the weakest.",
+                horizon(), now$label, now$when, horizon(), 100 * q$med[5], 100 * q$med[1])
+      } else {
         q <- value_q()
         sprintf("CAPE now %.1f (%s). Median yearly return over the next %d years: %.1f%% from the dearest fifth of starting points, %.1f%% from the cheapest.",
                 cape_now$cape, cape_now$when, horizon(), 100 * q$med[5], 100 * q$med[1])
@@ -622,7 +701,7 @@ server <- function(input, output, session) {
             (view() %in% c("rolling", "falls") && stacked() && length(keep) > 1)
     themed_figure(tall = tall, function(theme) switch(view(),
            calc = dividend_plot(calc_df(), yrs, narrow = isTRUE(input$narrow), theme = theme),
-           value = value_plot(value_df(), value_q(), cape_now, horizon(),
+           value = value_plot(value_pts(), value_q(), value_now(), value_now()$x_all, horizon(),
                               fit = if(isTRUE(input$fit)) value_reg(), narrow = isTRUE(input$narrow), theme = theme),
            growth = {
              df <- index_df() %>% filter(market %in% keep)
@@ -698,14 +777,15 @@ server <- function(input, output, session) {
            }))
   }) %>% bindCache(country(), view(), real(), yrs(), shown(), stacked(),
                    if(identical(view(), "rolling")) win(),
-                   if(identical(view(), "value")) list(horizon(), isTRUE(input$fit)),
+                   if(identical(view(), "value")) list(horizon(), isTRUE(input$fit), measure()),
                    if(identical(view(), "calc")) amount(),
                    if(view() %in% c("growth", "calc", "value")) isTRUE(input$narrow))
   
   #### download: the data behind the current chart ####
   output$download <- downloadHandler(
     filename = function(){
-      if(view() == "value") return(paste0("us-cape-next-", horizon(), "-years", if(real()) "-real", ".csv"))
+      if(view() == "value") return(paste0(if(measure() == "past") "us-past-vs-next-" else "us-cape-next-",
+                                          horizon(), "-years", if(real()) "-real", ".csv"))
       paste0(if(country() == "us") "us" else "australian", "-market-", view(),
              if(view() == "rolling") paste0("-", win(), "yr"),
              if(view() == "calc") paste0("-", format(amount(), scientific = FALSE)),
@@ -715,8 +795,8 @@ server <- function(input, output, session) {
     content = function(file){
       if(identical(view(), "value")){
         d <- value_df()
-        out <- data.frame(year = d$year, cape = round(d$cape, 2), fwd = round(d$fwd, 4))
-        names(out)[3] <- sprintf("next_%dyr_return", horizon())
+        out <- data.frame(year = d$year, cape = round(d$cape, 2), past = round(d$past, 4), fwd = round(d$fwd, 4))
+        names(out)[3:4] <- sprintf(c("previous_%dyr_return", "next_%dyr_return"), horizon())
         return(write.csv(out, file, row.names = FALSE, na = ""))
       }
       if(identical(view(), "calc")){

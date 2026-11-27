@@ -95,21 +95,38 @@ dividend_path <- function(raw, y0, y1, amount, real = FALSE){
              cash       = c(0, cumsum(paid / defl)))
 }
 
-# idx: a market's $100 index (long format); cape: year, cape (Decembers)
+# idx: a market's $100 index (long format); cape: year, cape (Decembers).
+# One row per December: CAPE then, `past` the average yearly return over
+# the h years to that December, and `fwd` the one over the h years after it.
 value_data <- function(idx, cape, h = value_horizon){
   idx <- idx[idx$market == "Stock Price + Div", ]; idx <- idx[order(idx$year), ]
   stopifnot(length(h) == 1, h >= 1, h < nrow(idx))
-  fwd <- c((idx$dollars[-(1:h)] / idx$dollars[1:(nrow(idx) - h)])^(1 / h) - 1, rep(NA, h))
-  merge(cape, data.frame(year = idx$year, fwd = fwd), by = "year")
+  ratio <- (idx$dollars[-(1:h)] / idx$dollars[1:(nrow(idx) - h)])^(1 / h) - 1
+  merge(cape, data.frame(year = idx$year, past = c(rep(NA, h), ratio), fwd = c(ratio, rep(NA, h))), by = "year")
 }
-# fifths of the Decembers that have a full 10 years after them, by CAPE
-# least-squares fit of the next-h-year return on ln(CAPE). Neighbouring
-# starting years share h - 1 years of returns, so their errors are correlated
-# and ordinary standard errors are too small: Newey-West (Bartlett weights,
-# lag h - 1) standard errors allow for that.
-value_fit <- function(d, h, x_now){
-  d <- d[!is.na(d$fwd), ]
-  fit <- lm(fwd ~ log(cape), d)
+
+# The two ways the Valuation tab can sort starting points: what each needs
+# for the fit, axis, cards and notes. `ln`: fit on the log of x (CAPE).
+value_measures <- list(
+  cape = list(col = "cape", ln = TRUE),
+  past = list(col = "past", ln = FALSE))
+
+# the dots for one measure: x = that measure, starting years with both x and
+# a full h years after them
+value_points <- function(d, measure){
+  d$x <- d[[value_measures[[measure]]$col]]
+  d[!is.na(d$x) & !is.na(d$fwd), ]
+}
+
+# least-squares fit of the next-h-year return on x (ln x for CAPE).
+# Neighbouring starting years share h - 1 years of returns, so their errors
+# are correlated and ordinary standard errors are too small: Newey-West
+# (Bartlett weights, lag h - 1) standard errors allow for that.
+# d: value_points(); x_now: today's value of the measure.
+value_fit <- function(d, h, x_now, ln = TRUE){
+  tx <- if(ln) log else identity
+  d$tx <- tx(d$x)
+  fit <- lm(fwd ~ tx, d)
   X <- model.matrix(fit); e <- resid(fit); n <- nrow(X); B <- solve(crossprod(X))
   S <- crossprod(X * e)
   for(l in seq_len(h - 1)){
@@ -118,19 +135,21 @@ value_fit <- function(d, h, x_now){
   }
   V <- B %*% S %*% B
   b <- coef(fit); se_nw <- sqrt(diag(V)); sig <- summary(fit)$sigma
-  grid <- exp(seq(log(min(d$cape)), log(max(d$cape, x_now)), length.out = 80))
-  Gm <- cbind(1, log(grid)); se_g <- sqrt(rowSums((Gm %*% V) * Gm))
-  x0 <- c(1, log(x_now)); f0 <- sum(x0 * b); se0 <- sqrt(drop(t(x0) %*% V %*% x0))
-  list(n = n, h = h, years = range(d$year), b = b, se_ols = sqrt(diag(vcov(fit))), se_nw = se_nw,
-       r2 = summary(fit)$r.squared, r2_inv = summary(lm(fwd ~ I(1 / cape), d))$r.squared, sigma = sig,
+  lim <- range(d$x, x_now)
+  grid <- if(ln) exp(seq(log(lim[1]), log(lim[2]), length.out = 80)) else seq(lim[1], lim[2], length.out = 80)
+  Gm <- cbind(1, tx(grid)); se_g <- sqrt(rowSums((Gm %*% V) * Gm))
+  x0 <- c(1, tx(x_now)); f0 <- sum(x0 * b); se0 <- sqrt(drop(t(x0) %*% V %*% x0))
+  list(n = n, h = h, ln = ln, years = range(d$year), b = b, se_ols = sqrt(diag(vcov(fit))), se_nw = se_nw,
+       r2 = summary(fit)$r.squared, r2_inv = if(ln) summary(lm(fwd ~ I(1 / x), d))$r.squared, sigma = sig,
+       predict = function(x) sum(b * c(1, tx(x))),       # at one x
        grid = grid, yhat = drop(Gm %*% b), lo = drop(Gm %*% b) - 1.96 * se_g, hi = drop(Gm %*% b) + 1.96 * se_g,
        x_now = x_now, f0 = f0, ci0 = f0 + c(-1, 1) * 1.96 * se0, pi0 = f0 + c(-1, 1) * 1.96 * sqrt(se0^2 + sig^2))
 }
 
+# fifths of the starting points (value_points()), lowest x to highest
 value_fifths <- function(d){
-  d <- d[!is.na(d$fwd), ]
-  br <- quantile(d$cape, 0:5 / 5)
-  d$q <- cut(d$cape, br, include.lowest = TRUE, labels = FALSE)
+  br <- quantile(d$x, 0:5 / 5)
+  d$q <- cut(d$x, br, include.lowest = TRUE, labels = FALSE)
   do.call(rbind, lapply(1:5, function(i){
     s <- d[d$q == i, ]
     data.frame(q = i, lo = br[i], hi = br[i + 1], n = nrow(s), med = median(s$fwd),

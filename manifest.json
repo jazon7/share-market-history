@@ -1,7 +1,7 @@
 {
   "version": 1,
   "locale": "en_US",
-  "platform": "4.6.1",
+  "platform": "4.6.2",
   "metadata": {
     "appmode": "shiny",
     "primary_rmd": null,
@@ -1267,7 +1267,7 @@
       "checksum": "d0675af36d86e37922ea64478dadcdad"
     },
     "app.R": {
-      "checksum": "4e6a8a20ee86d218990fd173e3684898"
+      "checksum": "a223d7a0c626537f22969cd080be8776"
     },
     "data/australianstockmarket.RDS": {
       "checksum": "8aef7afe2abdd6f8741b0311f1c0863a"
@@ -1288,19 +1288,19 @@
       "checksum": "4610663eff024cb6195afa1f2f07243f"
     },
     "R/controls.R": {
-      "checksum": "26629dabadb7d702b280e119e4762bbc"
+      "checksum": "ed63bb2857edfcc839eb936ea4f4a387"
     },
     "R/figures.R": {
-      "checksum": "f39c65f273128fce9cac34334876ba20"
+      "checksum": "4f1b2d2dcbe26eebdbccc9a83384ed38"
     },
     "R/format.R": {
       "checksum": "db333afbd10064178d600b2a6398b8c5"
     },
     "R/market.R": {
-      "checksum": "170f46fe9b2d1c61595d116ed391b08c"
+      "checksum": "1fb99fcf47a4a7813b342b456a003997"
     },
     "www/app.css": {
-      "checksum": "86c2616820b9a4dfaf299091e5aa401c"
+      "checksum": "fcb27387e2db7c03ed397323a1580c0e"
     },
     "www/app.js": {
       "checksum": "0668af06f0e2006dc20311f3ca308457"

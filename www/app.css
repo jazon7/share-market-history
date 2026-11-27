@@ -56,6 +56,14 @@ html, body { background: var(--page); color: var(--ink); -webkit-font-smoothing:
 .country-switch label:hover { color: var(--ink); }
 .country-switch .btn-check:checked + label { color: var(--ink); background: var(--line); }
 .country-switch .btn-check:focus-visible + label { outline: 2px solid var(--ink-3); outline-offset: -2px; }
+.period .bslib-input-switch { margin: 0; }
+.text-switch-wrap { display: inline-flex; align-items: center; gap: 8px; margin-right: 12px; }
+.text-switch { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.text-switch label { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; margin: 0; cursor: pointer; color: var(--ink-3); font-size: .82rem; white-space: nowrap; }
+.text-switch label + input + label { border-left: 1px solid var(--line-2); }
+.text-switch label:hover { color: var(--ink); }
+.text-switch .btn-check:checked + label { color: var(--ink); background: var(--line); }
+.text-switch .btn-check:focus-visible + label { outline: 2px solid var(--ink-3); outline-offset: -2px; }
 .layout-switch { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
 .layout-switch label { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 26px; margin: 0; cursor: pointer; color: var(--ink-3); }
 .layout-switch label + input + label { border-left: 1px solid var(--line-2); }

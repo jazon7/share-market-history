@@ -80,6 +80,22 @@ layout_switch <- function(id, selected){
            }))
 }
 
+# a small labelled switch between a few text options (a shiny radio input),
+# e.g. the Valuation tab's starting point
+text_switch <- function(id, label, choices, selected){
+  selected <- restored(id, selected, unname(choices))
+  tags$div(class = "text-switch-wrap",
+           tags$span(class = "period-label", id = paste0(id, "-label"), label),
+           tags$div(id = id, class = "shiny-input-radiogroup text-switch", role = "radiogroup",
+                    `aria-labelledby` = paste0(id, "-label"),
+                    lapply(names(choices), function(lab){
+                      val <- choices[[lab]]; bid <- paste0(id, "_", val)
+                      tagList(tags$input(type = "radio", class = "btn-check", name = id, id = bid,
+                                         value = val, autocomplete = "off", checked = if(val == selected) NA),
+                              tags$label(`for` = bid, lab))
+                    })))
+}
+
 # quick year ranges ending in the latest year (handled in the browser)
 year_presets <- function(){
   div(class = "year-presets", role = "group", `aria-label` = "Quick year ranges",
